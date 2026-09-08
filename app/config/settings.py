@@ -20,6 +20,10 @@ class Config:
     _default_db_url = f"mysql+pymysql://{DB_USER}:{_safe_password}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
     SQLALCHEMY_DATABASE_URI = os.getenv("DATABASE_URL", _default_db_url)
     SQLALCHEMY_TRACK_MODIFICATIONS = False
+    SQLALCHEMY_ENGINE_OPTIONS = {
+        "pool_recycle": 280,
+        "pool_pre_ping": True,
+    }
 
     # ── LLM Provider ────────────────────────────────────────────
     LLM_PROVIDER = os.getenv("LLM_PROVIDER", "gemini")
