@@ -1,0 +1,119 @@
+"""
+DeveloperAgent — Step 3
+Uses the implementation map from RepoAnalysisAgent to generate code changes.
+Can receive QA feedback for rework cycles.
+"""
+from app.agents.base_agent import BaseAgent, AgentResult
+from app.services.llm_service import LLMService
+
+
+DEVELOPER_PROMPT_TEMPLATE = """You are a DEVAA Developer Agent. Generate implementation changes for the following story.
+
+STORY:
+Title: {title}
+Description: {description}
+Acceptance Criteria: {acceptance_criteria}
+
+IMPLEMENTATION MAP (from Repository Analysis):
+Context: {context_summary}
+Files to Modify: {files_to_modify}
+Patterns to Follow: {patterns_found}
+Implementation Notes: {implementation_notes}
+
+{rework_section}
+
+Generate the code implementation plan. For each file that needs to change, describe:
+1. Exact changes needed
+2. Code snippets / diffs
+3. Reason each change satisfies the acceptance criteria
+
+Respond in this exact JSON format:
+{{
+  "summary": "High-level summary of all changes made",
+  "changes": [
+    {{
+      "file": "path/to/file",
+      "action": "create|modify|delete",
+      "description": "What was changed and why",
+      "code_snippet": "The actual code or diff for this file",
+      "satisfies_criteria": ["criterion 1", "criterion 2"]
+    }}
+  ],
+  "total_files_changed": 3,
+  "ready_for_validation": true
+}}
+
+Respond ONLY with the JSON object."""
+
+REWORK_SECTION_TEMPLATE = """
+⚠️ REWORK CYCLE — QA REJECTION FEEDBACK (Iteration {iteration}):
+The previous implementation was rejected by QA with these comments:
+{qa_feedback}
+
+You MUST address ALL of the above QA comments in this implementation.
+"""
+
+
+class DeveloperAgent(BaseAgent):
+    agent_name = "Developer"
+
+    def _execute(self, context: dict) -> AgentResult:
+        story = context.get('story')
+        impl_map = context.get('implementation_map', {})
+        qa_feedback = context.get('qa_feedback')
+        loop_iteration = context.get('loop_iteration', 1)
+
+        if not story:
+            return AgentResult(success=False, error="No story provided to DeveloperAgent.")
+
+        title = story.title if hasattr(story, 'title') else story.get('title', '')
+        description = story.description if hasattr(story, 'description') else story.get('description', '')
+        acceptance_criteria = story.acceptance_criteria if hasattr(story, 'acceptance_criteria') else story.get('acceptance_criteria', '')
+
+        rework_section = ""
+        if qa_feedback:
+            rework_section = REWORK_SECTION_TEMPLATE.format(
+                iteration=loop_iteration,
+                qa_feedback=qa_feedback
+            )
+
+        prompt = DEVELOPER_PROMPT_TEMPLATE.format(
+            title=title,
+            description=description,
+            acceptance_criteria=acceptance_criteria,
+            context_summary=impl_map.get('context_summary', 'No context available'),
+            files_to_modify=str(impl_map.get('files_to_modify', [])),
+            patterns_found=str(impl_map.get('patterns_found', [])),
+            implementation_notes=impl_map.get('implementation_notes', ''),
+            rework_section=rework_section
+        )
+
+        try:
+            llm_response = LLMService.generate_response(
+                prompt=prompt,
+                system_instruction="You are a senior software developer. Respond ONLY with valid JSON."
+            )
+
+            import json
+            llm_response = llm_response.strip()
+            if llm_response.startswith("```"):
+                llm_response = llm_response.split("```")[1]
+                if llm_response.startswith("json"):
+                    llm_response = llm_response[4:]
+
+            parsed = json.loads(llm_response)
+
+            return AgentResult(
+                success=True,
+                output={
+                    "summary": parsed.get('summary', ''),
+                    "changes": parsed.get('changes', []),
+                    "total_files_changed": parsed.get('total_files_changed', 0),
+                    "ready_for_validation": parsed.get('ready_for_validation', True),
+                    "loop_iteration": loop_iteration
+                }
+            )
+
+        except Exception as e:
+            self.logger.error(f"DeveloperAgent LLM error: {e}")
+            return AgentResult(success=False, error=f"Code generation failed: {str(e)}")
