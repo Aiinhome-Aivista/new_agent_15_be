@@ -51,6 +51,7 @@ class Config:
     JIRA_STATUS_IN_PROGRESS = os.getenv("JIRA_STATUS_IN_PROGRESS", "In Progress")
     JIRA_STATUS_QA_TESTING = os.getenv("JIRA_STATUS_QA_TESTING", "QA Testing")
     JIRA_STATUS_DONE = os.getenv("JIRA_STATUS_DONE", "Done")
+    SYNC_INTERVAL_MINUTES = int(os.getenv("SYNC_INTERVAL_MINUTES", 10))
 
     # ── GitHub Integration ──────────────────────────────────────
     GITHUB_TOKEN = os.getenv("GITHUB_TOKEN", "")
