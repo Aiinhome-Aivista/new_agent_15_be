@@ -25,48 +25,115 @@ class JiraTaskProvider(BaseTaskProvider):
             current_app.config.get('JIRA_EMAIL')
         )
 
+    def _extract_adf_text(self, adf_node) -> str:
+        if not adf_node:
+            return ""
+        if isinstance(adf_node, str):
+            return adf_node
+        if isinstance(adf_node, dict):
+            text = adf_node.get('text', '')
+            content = adf_node.get('content', [])
+            inner_text = " ".join(self._extract_adf_text(child) for child in content if child).strip()
+            return f"{text} {inner_text}".strip()
+        if isinstance(adf_node, list):
+            return " ".join(self._extract_adf_text(item) for item in adf_node if item).strip()
+        return ""
+
+    def _build_jql(self, min_priority: str = "High", status: str = "To Do") -> str:
+        conditions = []
+        
+        # Priority mapping: Jira does NOT support >= operator on priority
+        priority_levels = ["Lowest", "Low", "Medium", "High", "Highest"]
+        min_p = (min_priority or "").capitalize()
+        if min_p in priority_levels:
+            idx = priority_levels.index(min_p)
+            allowed = priority_levels[idx:]
+            if "Highest" in allowed:
+                allowed.extend(["Critical", "Blocker"])
+            p_list = ", ".join(f'"{p}"' for p in allowed)
+            conditions.append(f'priority in ({p_list})')
+        elif min_p and min_p.lower() != "all":
+            conditions.append(f'priority = "{min_priority}"')
+
+        # Status condition
+        if status:
+            conditions.append(f'status in ("{status}", "To Do", "TODO", "Open")')
+
+        jql_body = " AND ".join(conditions)
+        return f"{jql_body} ORDER BY created DESC" if jql_body else "ORDER BY created DESC"
+
     def fetch_tasks(self, assignee_email: str, min_priority: str = "High", status: str = "To Do") -> List[TaskModel]:
         if not self._is_configured():
             logger.warning("Jira not configured. Skipping fetch_tasks.")
             return []
 
-        # JQL to fetch tickets with min priority, in specific status (ignoring assignee)
-        jql = f'priority >= "{min_priority}" AND status = "{status}" ORDER BY created DESC'
-        url = f"{self._base()}/rest/api/3/search"
+        jql = self._build_jql(min_priority=min_priority, status=status)
+        url = f"{self._base().rstrip('/')}/rest/api/3/search/jql"
+        headers = {
+            "Accept": "application/json",
+            "Content-Type": "application/json"
+        }
+        fields = ["summary", "description", "status", "priority", "assignee", "key"]
         
         try:
-            resp = requests.get(url, auth=self._auth(),
-                                params={"jql": jql, "maxResults": 50},
-                                headers={"Accept": "application/json"})
+            payload = {
+                "jql": jql,
+                "maxResults": 50,
+                "fields": fields
+            }
+            resp = requests.post(url, auth=self._auth(), json=payload, headers=headers)
             
+            if resp.status_code != 200:
+                logger.warning(f"Jira query with jql '{jql}' returned {resp.status_code}: {resp.text}. Trying fallback query...")
+                # Fallback 1: status only
+                fallback_payload = {
+                    "jql": f'status = "{status}" ORDER BY created DESC',
+                    "maxResults": 50,
+                    "fields": fields
+                }
+                resp = requests.post(url, auth=self._auth(), json=fallback_payload, headers=headers)
+                if resp.status_code != 200:
+                    logger.warning(f"Fallback 1 failed. Trying broad fallback ORDER BY created DESC...")
+                    fallback_payload2 = {
+                        "jql": "ORDER BY created DESC",
+                        "maxResults": 50,
+                        "fields": fields
+                    }
+                    resp = requests.post(url, auth=self._auth(), json=fallback_payload2, headers=headers)
+
             if resp.status_code == 200:
                 issues = resp.json().get('issues', [])
                 tasks = []
                 for issue in issues:
-                    fields = issue.get('fields', {})
-                    # Parsing Atlassian Document Format (ADF) description to plain text roughly
-                    # A robust implementation would parse ADF, but here we just take text if available
-                    desc_adf = fields.get('description')
-                    description_text = ""
-                    if desc_adf and isinstance(desc_adf, dict):
-                        for content_block in desc_adf.get('content', []):
-                            for text_block in content_block.get('content', []):
-                                if 'text' in text_block:
-                                    description_text += text_block['text'] + "\n"
+                    fields_data = issue.get('fields', {})
+                    desc_adf = fields_data.get('description')
+                    description_text = self._extract_adf_text(desc_adf)
                     
-                    actual_assignee_email = fields.get('assignee', {}).get('emailAddress') or fields.get('assignee', {}).get('displayName') or "Unassigned"
+                    assignee_obj = fields_data.get('assignee')
+                    actual_assignee = (
+                        assignee_obj.get('displayName') or 
+                        assignee_obj.get('emailAddress') or 
+                        "Unassigned"
+                    ) if assignee_obj else "Unassigned"
+
+                    issue_key = issue.get('key') or issue.get('id')
+                    status_name = fields_data.get('status', {}).get('name', status)
+                    priority_name = fields_data.get('priority', {}).get('name') or "High"
+                    title = fields_data.get('summary') or f"Task {issue_key}"
+
                     tasks.append(TaskModel(
-                        external_id=issue.get('key'),
-                        title=fields.get('summary', ''),
+                        external_id=issue_key,
+                        title=title,
                         description=description_text,
-                        acceptance_criteria="", # Jira might use custom fields for this
-                        assignee_email=actual_assignee_email,
-                        priority=fields.get('priority', {}).get('name'),
-                        status=fields.get('status', {}).get('name', status)
+                        acceptance_criteria="",
+                        assignee_email=actual_assignee,
+                        priority=priority_name,
+                        status=status_name
                     ))
+                logger.info(f"Successfully fetched {len(tasks)} issues from Jira using /rest/api/3/search/jql.")
                 return tasks
             else:
-                logger.error(f"Jira fetch_tasks failed: {resp.status_code} {resp.text}")
+                logger.error(f"Jira fetch_tasks failed completely: {resp.status_code} {resp.text}")
                 return []
         except Exception as e:
             logger.exception(f"Exception during Jira fetch_tasks: {e}")

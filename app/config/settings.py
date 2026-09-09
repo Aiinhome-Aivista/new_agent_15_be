@@ -43,6 +43,8 @@ class Config:
     LLM_TIMEOUT = int(os.getenv("LLM_TIMEOUT", 300))
 
     # ── Jira Integration ────────────────────────────────────────
+    ACTIVE_TASK_PROVIDER = os.getenv("ACTIVE_TASK_PROVIDER", "jira")
+    MIN_SYNC_PRIORITY = os.getenv("MIN_SYNC_PRIORITY", "High")
     JIRA_BASE_URL = os.getenv("JIRA_BASE_URL", "")
     JIRA_PROJECT_KEY = os.getenv("JIRA_PROJECT_KEY", "DEVAA")
     JIRA_EMAIL = os.getenv("JIRA_EMAIL", "")

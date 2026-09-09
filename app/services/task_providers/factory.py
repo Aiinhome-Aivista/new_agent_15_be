@@ -14,7 +14,12 @@ class TaskProviderFactory:
         Reads from ACTIVE_TASK_PROVIDER in the environment/config.
         Returns None if 'manual' or unconfigured.
         """
-        active_provider = current_app.config.get('ACTIVE_TASK_PROVIDER', 'manual').lower()
+        import os
+        active_provider = (
+            current_app.config.get('ACTIVE_TASK_PROVIDER') or 
+            os.getenv('ACTIVE_TASK_PROVIDER') or 
+            'jira'
+        ).strip().lower()
         
         if active_provider == 'jira':
             return JiraTaskProvider()

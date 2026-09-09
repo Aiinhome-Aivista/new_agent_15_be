@@ -12,7 +12,8 @@ def get_connector_status():
     """
     Returns the status and configuration of external SaaS connectors.
     """
-    provider = current_app.config.get('ACTIVE_TASK_PROVIDER', 'manual').lower()
+    import os
+    provider = (current_app.config.get('ACTIVE_TASK_PROVIDER') or os.getenv('ACTIVE_TASK_PROVIDER') or 'jira').strip().lower()
     
     if provider == 'jira':
         # Mask the email and token for security
