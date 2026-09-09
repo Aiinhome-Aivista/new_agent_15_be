@@ -81,6 +81,30 @@ class ValidatorAgent(BaseAgent):
             parsed = json.loads(llm_response)
             passed = parsed.get('passed', False)
 
+            # Metric: file_selection_correctness
+            try:
+                impl_map = context.get('implementation_map', {})
+                recommended_files = impl_map.get('files_to_modify', [])
+                actual_files = [c.get('file') for c in changes if c.get('file')]
+                
+                if not recommended_files:
+                    file_selection_correctness = 1.0
+                else:
+                    intersection = set(recommended_files).intersection(set(actual_files))
+                    file_selection_correctness = float(len(intersection)) / len(recommended_files)
+                
+                from app.services.metrics_service import MetricsService
+                workflow_id = context.get('workflow_id')
+                story_id = story.id if story else None
+                if workflow_id and story_id:
+                    MetricsService.record_metrics(
+                        workflow_id=workflow_id,
+                        story_id=story_id,
+                        metrics={"file_selection_correctness": file_selection_correctness}
+                    )
+            except Exception as metric_err:
+                self.logger.error(f"Failed to record metric file_selection_correctness: {metric_err}")
+
             return AgentResult(
                 success=passed,
                 output={

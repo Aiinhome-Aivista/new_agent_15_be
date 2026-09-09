@@ -174,6 +174,7 @@ class Orchestrator:
                                         f'Validate implementation (iteration {loop_count}).', loop_count)
             val_result = ValidatorAgent(db=db, config=config).run({
                 'story': context_story,
+                'implementation_map': implementation_map,
                 'developer_output': developer_output,
                 'loop_iteration': loop_count
             }, workflow_id=workflow_id, step_record=step_val)

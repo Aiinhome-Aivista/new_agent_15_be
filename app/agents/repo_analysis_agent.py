@@ -49,12 +49,83 @@ class RepoAnalysisAgent(BaseAgent):
         source_branch = story.source_branch if hasattr(story, 'source_branch') else story.get('source_branch', '')
         repo_details = story.repository_details if hasattr(story, 'repository_details') else story.get('repository_details', [])
 
+        # ── RAG LOGIC ──────────────────────────────────────────────
+        allowed_prefixes = self.config.get('ALLOWED_REPO_PREFIXES', '').split(',')
+        allowed_prefixes = [p.strip() for p in allowed_prefixes if p.strip()]
+
+        repo_texts = []
+        import tempfile, subprocess, os
+        
+        for repo in repo_details:
+            repo_url = repo.get('url')
+            if not repo_url: continue
+            
+            # Check guardrail
+            is_allowed = False
+            for prefix in allowed_prefixes:
+                if repo_url.startswith(prefix):
+                    is_allowed = True
+                    break
+            
+            if not is_allowed and allowed_prefixes:
+                self.logger.warning(f"Repo {repo_url} not in ALLOWED_REPO_PREFIXES.")
+                continue
+
+            # Clone
+            with tempfile.TemporaryDirectory() as temp_dir:
+                try:
+                    github_token = self.config.get('GITHUB_TOKEN')
+                    clone_url = repo_url
+                    if github_token and "github.com" in repo_url:
+                        clone_url = repo_url.replace("https://github.com/", f"https://oauth2:{github_token}@github.com/")
+
+                    subprocess.check_call(['git', 'clone', '--depth', '1', clone_url, temp_dir])
+                    
+                    # Read files
+                    for root, _, files in os.walk(temp_dir):
+                        if '.git' in root or 'node_modules' in root or 'venv' in root:
+                            continue
+                        for file in files:
+                            if file.endswith(('.py', '.js', '.jsx', '.ts', '.tsx', '.md', '.html', '.css')):
+                                file_path = os.path.join(root, file)
+                                try:
+                                    with open(file_path, 'r', encoding='utf-8') as f:
+                                        content = f.read()
+                                        rel_path = os.path.relpath(file_path, temp_dir)
+                                        repo_texts.append(f"File: {rel_path}\n{content}")
+                                except Exception:
+                                    pass
+                except Exception as e:
+                    self.logger.error(f"Failed to clone/read repo {repo_url}: {e}")
+
+        rag_context = ""
+        if repo_texts:
+            try:
+                from langchain.text_splitter import RecursiveCharacterTextSplitter
+                from langchain_community.embeddings import HuggingFaceEmbeddings
+                from langchain_community.vectorstores import Chroma
+                
+                text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
+                docs = text_splitter.create_documents(repo_texts)
+                
+                embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+                vectorstore = Chroma.from_documents(documents=docs, embedding=embeddings)
+                
+                query = f"{title}\n{description}\n{acceptance_criteria}"
+                relevant_docs = vectorstore.similarity_search(query, k=15)
+                rag_context = "\n\n".join([doc.page_content for doc in relevant_docs])
+            except Exception as e:
+                self.logger.error(f"RAG embedding failed: {e}")
+                rag_context = "RAG processing failed."
+        else:
+            rag_context = "No relevant repository context could be loaded (check ALLOWED_REPO_PREFIXES or token)."
+
         prompt = ANALYSIS_PROMPT_TEMPLATE.format(
             title=title,
             description=description,
             acceptance_criteria=acceptance_criteria,
             source_branch=source_branch,
-            repository_details=str(repo_details)
+            repository_details=f"RAG EXCERPTS:\n{rag_context}\n\nORIGINAL DETAILS:\n{str(repo_details)}"
         )
 
         try:

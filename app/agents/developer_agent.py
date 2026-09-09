@@ -103,11 +103,35 @@ class DeveloperAgent(BaseAgent):
 
             parsed = json.loads(llm_response)
 
+            summary = parsed.get('summary', '')
+            changes = parsed.get('changes', [])
+            
+            # Metric: pr_summary_matches_diff (semantic filename check)
+            pr_summary_matches_diff = 0.0
+            actual_files = [c.get('file') for c in changes if c.get('file')]
+            if actual_files and summary:
+                # Count how many modified filenames actually appear in the summary text
+                matches = sum(1 for f in actual_files if f in summary)
+                pr_summary_matches_diff = float(matches) / len(actual_files)
+                
+                try:
+                    from app.services.metrics_service import MetricsService
+                    workflow_id = context.get('workflow_id')
+                    story_id = story.id if story else None
+                    if workflow_id and story_id:
+                        MetricsService.record_metrics(
+                            workflow_id=workflow_id,
+                            story_id=story_id,
+                            metrics={"pr_summary_matches_diff": pr_summary_matches_diff}
+                        )
+                except Exception as metric_err:
+                    self.logger.error(f"Failed to record metric pr_summary_matches_diff: {metric_err}")
+
             return AgentResult(
                 success=True,
                 output={
-                    "summary": parsed.get('summary', ''),
-                    "changes": parsed.get('changes', []),
+                    "summary": summary,
+                    "changes": changes,
                     "total_files_changed": parsed.get('total_files_changed', 0),
                     "ready_for_validation": parsed.get('ready_for_validation', True),
                     "loop_iteration": loop_iteration

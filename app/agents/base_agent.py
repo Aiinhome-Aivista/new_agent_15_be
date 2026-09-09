@@ -47,6 +47,10 @@ class BaseAgent(ABC):
         from app.guardrails.execution_rails import ExecutionRails
 
         self.logger.info(f"[{self.agent_name}] Starting. Context keys: {list(context.keys())}")
+        
+        # Inject workflow_id into context if not present, useful for metrics
+        if workflow_id is not None and 'workflow_id' not in context:
+            context['workflow_id'] = workflow_id
 
         # ── Input Guardrails ──────────────────────────────────────
         rail_result = InputRails.validate(context, workflow_id=workflow_id, config=self.config)

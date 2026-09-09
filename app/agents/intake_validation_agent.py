@@ -6,7 +6,7 @@ from app.agents.base_agent import BaseAgent, AgentResult
 from app.services.llm_service import LLMService
 
 
-MANDATORY_FIELDS = ['title', 'description', 'acceptance_criteria', 'source_branch', 'repository_details']
+MANDATORY_FIELDS = ['title', 'description', 'acceptance_criteria', 'source_branch', 'repository_details', 'assignee_id']
 
 VALIDATION_PROMPT_TEMPLATE = """You are a DEVAA Intake Validator. Review the following Jira story and determine if it has enough information to begin automated development.
 
