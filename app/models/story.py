@@ -6,7 +6,9 @@ class Story(db.Model):
     __tablename__ = 'stories'
 
     id = db.Column(db.Integer, primary_key=True)
-    jira_story_key = db.Column(db.String(50), unique=True, nullable=True)
+    jira_story_key = db.Column(db.String(50), unique=True, nullable=True) # Kept for UI compatibility
+    external_task_id = db.Column(db.String(100), unique=True, nullable=True) # New generic key
+    external_provider = db.Column(db.String(50), nullable=True, default='manual') # e.g. jira, linear, asana, manual
     title = db.Column(db.String(255), nullable=False)
     description = db.Column(db.Text, nullable=True)
     acceptance_criteria = db.Column(db.Text, nullable=True)
@@ -33,6 +35,8 @@ class Story(db.Model):
         return {
             'id': self.id,
             'jira_story_key': self.jira_story_key,
+            'external_task_id': self.external_task_id,
+            'external_provider': self.external_provider,
             'title': self.title,
             'description': self.description,
             'acceptance_criteria': self.acceptance_criteria,

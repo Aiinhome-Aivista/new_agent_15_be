@@ -4,11 +4,23 @@ from app.models.story import Story
 from app.models.workflow import Workflow
 from app.models.user import User
 from app.utils.auth import require_auth, require_role
+from app.services.sync_service import SyncService
 import logging
 
 stories_bp = Blueprint('stories', __name__)
 logger = logging.getLogger(__name__)
 
+@stories_bp.route('/sync', methods=['POST'])
+@require_auth
+@require_role(['Product Owner', 'Admin'])
+def sync_stories():
+    """
+    Manually trigger a sync of tasks from the configured external provider (e.g. Jira).
+    """
+    result = SyncService.sync_assigned_tasks(user_id=request.current_user.id)
+    if "error" in result:
+        return jsonify(result), 500
+    return jsonify(result), 200
 
 @stories_bp.route('/', methods=['GET'])
 @require_auth
