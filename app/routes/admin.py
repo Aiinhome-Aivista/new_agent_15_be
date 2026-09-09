@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 
 @admin_bp.route('/metrics', methods=['GET'])
 @require_auth
-@require_role(['Admin'])
+@require_role(['Admin', 'Product Owner'])
 def get_metrics():
     """
     Aggregated success metrics dashboard — Admin only.

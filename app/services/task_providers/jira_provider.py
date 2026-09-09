@@ -30,8 +30,8 @@ class JiraTaskProvider(BaseTaskProvider):
             logger.warning("Jira not configured. Skipping fetch_tasks.")
             return []
 
-        # JQL to fetch tickets assigned to the user, with min priority, in specific status
-        jql = f'assignee = "{assignee_email}" AND priority >= "{min_priority}" AND status = "{status}" ORDER BY created DESC'
+        # JQL to fetch tickets with min priority, in specific status (ignoring assignee)
+        jql = f'priority >= "{min_priority}" AND status = "{status}" ORDER BY created DESC'
         url = f"{self._base()}/rest/api/3/search"
         
         try:
@@ -54,12 +54,13 @@ class JiraTaskProvider(BaseTaskProvider):
                                 if 'text' in text_block:
                                     description_text += text_block['text'] + "\n"
                     
+                    actual_assignee_email = fields.get('assignee', {}).get('emailAddress') or fields.get('assignee', {}).get('displayName') or "Unassigned"
                     tasks.append(TaskModel(
                         external_id=issue.get('key'),
                         title=fields.get('summary', ''),
                         description=description_text,
                         acceptance_criteria="", # Jira might use custom fields for this
-                        assignee_email=assignee_email,
+                        assignee_email=actual_assignee_email,
                         priority=fields.get('priority', {}).get('name'),
                         status=fields.get('status', {}).get('name', status)
                     ))

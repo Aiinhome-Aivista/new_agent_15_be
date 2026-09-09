@@ -56,7 +56,7 @@ class SyncService:
                     assignee_id=user.id, # Map back to local DEVAA user
                     owner_id=user.id, # Consider the user initiating the sync as the owner
                     status='TO-DO',
-                    repository_details=[{"name": "", "url": "", "branch": "main"}] # Default empty structure
+                    repository_details=[{"name": "", "url": "", "branch": "main", "external_assignee": task.assignee_email}] # Store assignee here for UI
                 )
                 db.session.add(new_story)
                 created_count += 1
