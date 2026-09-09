@@ -23,6 +23,7 @@ def create_app(config_class=Config):
     from app.routes.pull_requests import pull_requests_bp
     from app.routes.qa import qa_bp
     from app.routes.admin import admin_bp
+    from app.routes.connectors import connectors_bp
 
     app.register_blueprint(auth_bp, url_prefix='/api/auth')
     app.register_blueprint(workflows_bp, url_prefix='/api/workflows')
@@ -30,6 +31,7 @@ def create_app(config_class=Config):
     app.register_blueprint(pull_requests_bp, url_prefix='/api/pull-requests')
     app.register_blueprint(qa_bp, url_prefix='/api/qa')
     app.register_blueprint(admin_bp, url_prefix='/api/admin')
+    app.register_blueprint(connectors_bp, url_prefix='/api/connectors')
 
     @app.route('/health')
     def health_check():
