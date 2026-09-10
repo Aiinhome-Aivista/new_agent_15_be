@@ -99,6 +99,31 @@ class JiraService:
         return resp2.status_code == 204
 
     @classmethod
+    def add_attachment(cls, jira_key: str, filename: str, content: bytes, mime_type: str = 'text/markdown') -> bool:
+        """Attach raw bytes as a file to a Jira issue via REST API v3."""
+        if not cls._is_configured():
+            logger.warning("Jira not configured. Attachment skipped.")
+            return False
+        url = f"{cls._base()}/rest/api/3/issue/{jira_key}/attachments"
+        headers = {
+            "X-Atlassian-Token": "no-check",
+            "Accept": "application/json"
+        }
+        files = {
+            "file": (filename, content, mime_type)
+        }
+        try:
+            resp = requests.post(url, auth=cls._auth(), headers=headers, files=files)
+            if resp.status_code in (200, 201):
+                logger.info(f"Successfully attached {filename} to Jira issue {jira_key}")
+                return True
+            logger.error(f"Jira add_attachment failed: {resp.status_code} {resp.text}")
+            return False
+        except Exception as e:
+            logger.exception(f"Error attaching {filename} to Jira {jira_key}: {e}")
+            return False
+
+    @classmethod
     def find_user(cls, query: str) -> dict | None:
         """Search Jira users by email or name. Returns user dict with accountId or None."""
         if not cls._is_configured() or not query:

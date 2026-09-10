@@ -1,68 +1,166 @@
-import os
+"""
+LLMService — Routes prompts to the configured LLM provider.
+
+Multi-key Gemini support:
+  - Each agent has a dedicated Gemini key (KEY_1 to KEY_5) to spread quota.
+  - If a dedicated key is not set, falls back to round-robin across all
+    configured keys, then to the primary GEMINI_API_KEY.
+  - Usage: LLMService.generate_response(prompt, agent_name="Developer")
+"""
+import itertools
+import logging
 import requests
 import google.generativeai as genai
 from flask import current_app
 
+logger = logging.getLogger(__name__)
+
+# Module-level round-robin iterator (shared across requests)
+_rr_cycle = None
+_rr_keys: list[str] = []
+
+
+def _build_key_pool(config: dict) -> list[str]:
+    """Collect all non-empty Gemini keys into a deduplicated ordered list."""
+    candidates = [
+        config.get("GEMINI_API_KEY_1"),
+        config.get("GEMINI_API_KEY_2"),
+        config.get("GEMINI_API_KEY_3"),
+        config.get("GEMINI_API_KEY_4"),
+        config.get("GEMINI_API_KEY_5"),
+        config.get("GEMINI_API_KEY"),   # primary key last (fallback)
+    ]
+    seen = set()
+    pool = []
+    for k in candidates:
+        if k and k.strip() and k.strip() not in seen:
+            seen.add(k.strip())
+            pool.append(k.strip())
+    return pool
+
+
+def _get_gemini_key(config: dict, agent_name: str | None = None) -> str:
+    """
+    Returns the best Gemini API key for the given agent.
+
+    Priority:
+      1. Dedicated key for this agent (from GEMINI_AGENT_KEY_MAP)
+      2. Round-robin across all configured keys
+      3. Primary GEMINI_API_KEY
+    Raises ValueError if no key is available.
+    """
+    global _rr_cycle, _rr_keys
+
+    # ── 1. Per-agent dedicated key ────────────────────────────
+    if agent_name:
+        agent_key_map: dict = config.get("GEMINI_AGENT_KEY_MAP", {})
+        env_var_name = agent_key_map.get(agent_name)
+        if env_var_name:
+            dedicated = config.get(env_var_name, "").strip()
+            if dedicated:
+                logger.debug(f"[LLMService] Agent '{agent_name}' using dedicated key {env_var_name}")
+                return dedicated
+
+    # ── 2. Round-robin pool ───────────────────────────────────
+    pool = _build_key_pool(config)
+    if pool:
+        # Rebuild cycle only if pool changed
+        if pool != _rr_keys:
+            _rr_keys = pool
+            _rr_cycle = itertools.cycle(pool)
+            logger.info(f"[LLMService] Key pool built: {len(pool)} key(s) in rotation")
+        key = next(_rr_cycle)
+        logger.debug(f"[LLMService] Round-robin key selected (pool size={len(pool)})")
+        return key
+
+    raise ValueError(
+        "No Gemini API key configured. Set GEMINI_API_KEY or GEMINI_API_KEY_1..5 in .env"
+    )
+
+
 class LLMService:
+
     @staticmethod
-    def generate_response(prompt, system_instruction=None, provider_override=None):
+    def generate_response(
+        prompt: str,
+        system_instruction: str | None = None,
+        provider_override: str | None = None,
+        agent_name: str | None = None,
+    ) -> str:
         """
-        Routes the prompt to the appropriate LLM provider.
+        Route the prompt to the appropriate LLM provider.
+
+        Args:
+            prompt:             The user/task prompt.
+            system_instruction: Optional system-level instruction.
+            provider_override:  Force a specific provider (overrides config).
+            agent_name:         Name of the calling agent (e.g. 'Developer').
+                                Used to select the dedicated Gemini key.
         """
-        # Allow dynamic override, otherwise use the environment default
-        provider = provider_override or current_app.config.get("LLM_PROVIDER", "gemini").lower()
+        provider = (
+            provider_override
+            or current_app.config.get("LLM_PROVIDER", "gemini")
+        ).lower()
 
         if provider == "gemini":
-            return LLMService._call_gemini(prompt, system_instruction)
-        elif provider in ["custom", "local"]:
+            return LLMService._call_gemini(prompt, system_instruction, agent_name)
+        elif provider in ("custom", "local"):
             return LLMService._call_local(prompt, system_instruction)
         else:
             raise ValueError(f"Unsupported LLM provider: {provider}")
 
+    # ──────────────────────────────────────────────────────────
+    # Provider implementations
+    # ──────────────────────────────────────────────────────────
+
     @staticmethod
-    def _call_gemini(prompt, system_instruction=None):
-        api_key = current_app.config.get("GEMINI_API_KEY")
-        if not api_key:
-            raise ValueError("GEMINI_API_KEY is not configured.")
+    def _call_gemini(
+        prompt: str,
+        system_instruction: str | None = None,
+        agent_name: str | None = None,
+    ) -> str:
+        config = current_app.config
+        api_key = _get_gemini_key(config, agent_name)
 
         genai.configure(api_key=api_key)
-        model_name = current_app.config.get("GEMINI_MODEL", "gemini-3.1-flash-lite")
-        
-        # Configure model with system instruction if provided
+        model_name = config.get("GEMINI_MODEL", "gemini-1.5-flash")
+
         kwargs = {}
         if system_instruction:
             kwargs["system_instruction"] = system_instruction
-            
+
         model = genai.GenerativeModel(model_name, **kwargs)
-        
+
         try:
             response = model.generate_content(prompt)
             return response.text
         except Exception as e:
+            logger.error(f"[LLMService] Gemini API error (agent={agent_name}): {e}")
             raise RuntimeError(f"Gemini API Error: {str(e)}")
 
     @staticmethod
-    def _call_local(prompt, system_instruction=None):
-        api_url = current_app.config.get("LLM_API_URL")
-        model = current_app.config.get("LLM_MODEL")
-        timeout = current_app.config.get("LLM_TIMEOUT", 300)
+    def _call_local(
+        prompt: str,
+        system_instruction: str | None = None,
+    ) -> str:
+        config = current_app.config
+        api_url = config.get("LLM_API_URL")
+        model   = config.get("LLM_MODEL")
+        timeout = config.get("LLM_TIMEOUT", 300)
 
         if not api_url:
             raise ValueError("LLM_API_URL is not configured for local provider.")
 
-        # Constructing payload assuming standard completion API (like Ollama or vLLM)
-        # Adapt payload structure based on the specific local LLM in use.
         payload = {
-            "model": model,
+            "model":  model,
             "prompt": f"{system_instruction}\n\n{prompt}" if system_instruction else prompt,
-            "stream": False
+            "stream": False,
         }
 
         try:
             response = requests.post(api_url, json=payload, timeout=timeout)
             response.raise_for_status()
             data = response.json()
-            # Depending on API, response key might be 'response' (Ollama) or 'text'
             return data.get("response", data.get("text", str(data)))
         except requests.RequestException as e:
             raise RuntimeError(f"Local LLM API Error: {str(e)}")

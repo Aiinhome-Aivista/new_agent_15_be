@@ -112,6 +112,8 @@ class RepoAnalysisAgent(BaseAgent):
                 vectorstore = Chroma.from_documents(documents=docs, embedding=embeddings)
                 
                 query = f"{title}\n{description}\n{acceptance_criteria}"
+                if context.get('qa_feedback'):
+                    query += f"\nQA REJECTION FEEDBACK:\n{context.get('qa_feedback')}"
                 relevant_docs = vectorstore.similarity_search(query, k=15)
                 rag_context = "\n\n".join([doc.page_content for doc in relevant_docs])
             except Exception as e:
@@ -120,18 +122,30 @@ class RepoAnalysisAgent(BaseAgent):
         else:
             rag_context = "No relevant repository context could be loaded (check ALLOWED_REPO_PREFIXES or token)."
 
+        qa_feedback = context.get('qa_feedback')
+        rework_section = ""
+        if qa_feedback:
+            rework_section = f"""
+
+⚠️ REWORK CONTEXT — Previous QA Rejection:
+The previous implementation was rejected. Specifically focus your repository
+analysis on files, dependencies, and architectural patterns relevant to resolving these QA issues:
+{qa_feedback}
+"""
+
         prompt = ANALYSIS_PROMPT_TEMPLATE.format(
             title=title,
             description=description,
             acceptance_criteria=acceptance_criteria,
             source_branch=source_branch,
             repository_details=f"RAG EXCERPTS:\n{rag_context}\n\nORIGINAL DETAILS:\n{str(repo_details)}"
-        )
+        ) + rework_section
 
         try:
             llm_response = LLMService.generate_response(
                 prompt=prompt,
-                system_instruction="You are a senior software architect. Respond ONLY with valid JSON."
+                system_instruction="You are a senior software architect. Respond ONLY with valid JSON.",
+                agent_name="RepoAnalysis"
             )
 
             import json

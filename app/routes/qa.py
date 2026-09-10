@@ -160,7 +160,8 @@ def trigger_rework(story_id):
     # Create a new workflow for the rework
     workflow = Workflow(
         story_id=story.id,
-        title=f"[REWORK] {story.title}",
+        title=story.title,          # clean title — no [REWORK] prefix
+        workflow_type='rework',     # explicit type flag (replaces [REWORK] hack)
         requirements_doc=story.description,
         owner_id=request.current_user.id,
         status='Planning',

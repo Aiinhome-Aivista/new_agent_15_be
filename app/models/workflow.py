@@ -7,11 +7,16 @@ class Workflow(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     title = db.Column(db.String(255), nullable=False)
     status = db.Column(db.String(50), nullable=False, default='Pending')
+    workflow_type = db.Column(
+        db.String(20),
+        nullable=False,
+        default='standard'   # 'standard' | 'rework'
+    )
     owner_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
-    story_id = db.Column(db.Integer, db.ForeignKey('stories.id'), nullable=True)  # link to story
+    story_id = db.Column(db.Integer, db.ForeignKey('stories.id'), nullable=True)
     requirements_doc = db.Column(db.Text, nullable=True)
-    current_agent = db.Column(db.String(100), nullable=True)   # which agent is running
-    loop_iteration = db.Column(db.Integer, default=1)          # dev↔validator loop counter
+    current_agent = db.Column(db.String(100), nullable=True)
+    loop_iteration = db.Column(db.Integer, default=1)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
     updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 

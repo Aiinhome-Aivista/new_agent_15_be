@@ -91,7 +91,8 @@ class DeveloperAgent(BaseAgent):
         try:
             llm_response = LLMService.generate_response(
                 prompt=prompt,
-                system_instruction="You are a senior software developer. Respond ONLY with valid JSON."
+                system_instruction="You are a senior software developer. Respond ONLY with valid JSON.",
+                agent_name="Developer"
             )
 
             import json

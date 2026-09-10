@@ -79,7 +79,8 @@ class IntakeValidationAgent(BaseAgent):
         try:
             llm_response = LLMService.generate_response(
                 prompt=prompt,
-                system_instruction="You are a strict validation agent. Respond ONLY with valid JSON."
+                system_instruction="You are a strict validation agent. Respond ONLY with valid JSON.",
+                agent_name="IntakeValidation"
             )
 
             import json

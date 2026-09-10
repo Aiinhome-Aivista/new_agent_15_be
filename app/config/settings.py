@@ -25,11 +25,31 @@ class Config:
         "pool_pre_ping": True,
     }
 
-    # ── LLM Provider ────────────────────────────────────────────
+    # ── LLM Provider ──────────────────────────────────────────
     LLM_PROVIDER = os.getenv("LLM_PROVIDER", "gemini")
 
-    GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-    GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+    # Primary Gemini key (used as fallback)
+    GEMINI_API_KEY  = os.getenv("GEMINI_API_KEY")
+    GEMINI_MODEL    = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+
+    # Per-agent dedicated keys (KEY_1..KEY_5)
+    # If a key is empty, the rotation pool falls back to GEMINI_API_KEY
+    GEMINI_API_KEY_1 = os.getenv("GEMINI_API_KEY_1")  # Intake
+    GEMINI_API_KEY_2 = os.getenv("GEMINI_API_KEY_2")  # RepoAnalysis
+    GEMINI_API_KEY_3 = os.getenv("GEMINI_API_KEY_3")  # Developer
+    GEMINI_API_KEY_4 = os.getenv("GEMINI_API_KEY_4")  # Validator
+    GEMINI_API_KEY_5 = os.getenv("GEMINI_API_KEY_5")  # BranchPR + Comment
+
+    # Agent → key index mapping (used by LLMService)
+    GEMINI_AGENT_KEY_MAP = {
+        "IntakeValidation": "GEMINI_API_KEY_1",
+        "RepoAnalysis":     "GEMINI_API_KEY_2",
+        "Developer":        "GEMINI_API_KEY_3",
+        "Validator":        "GEMINI_API_KEY_4",
+        "BranchPR":         "GEMINI_API_KEY_5",
+        "Comment":          "GEMINI_API_KEY_5",
+        "ReworkHandler":    "GEMINI_API_KEY_1",
+    }
 
     OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
     OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")

@@ -404,6 +404,7 @@ def trigger_run(story_id):
     workflow = Workflow(
         story_id=story.id,
         title=story.title,
+        workflow_type='standard',   # explicit — not a rework
         requirements_doc=story.description,
         owner_id=request.current_user.id,
         status='Planning',

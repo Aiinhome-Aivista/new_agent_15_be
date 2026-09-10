@@ -34,6 +34,14 @@ COMMENT_TEMPLATES = {
         "DEVAA is re-running the development pipeline addressing the above comments. "
         "A new PR will be created upon completion."
     ),
+    "task_done_pr_raised": (
+        "🚀 *DEVAA: Task Done — PR Raised*\n\n"
+        "**PR:** {pr_url}\n"
+        "**Branch:** `{branch_name}`\n\n"
+        "📎 Evidence report `{evidence_filename}` attached to this issue.\n\n"
+        "**Summary:** {pr_summary}\n\n"
+        "Story moved to QA-TESTING. Human review required."
+    ),
     "done": (
         "🎉 *DEVAA: Story Complete*\n\n"
         "The PR has been approved and merged. This story is now DONE.\n\n"

@@ -44,12 +44,17 @@ class Story(db.Model):
             first_det.get('start_date') or
             self.external_provider == 'manual'
         )
+        # Check if story has any QA rejection
+        from app.models.devaa_models import QAReview
+        has_rework = QAReview.query.filter_by(story_id=self.id, decision='rejected', is_rework=True).first() is not None
+
         return {
             'id': self.id,
             'jira_story_key': self.jira_story_key,
             'external_task_id': self.external_task_id,
             'external_provider': self.external_provider,
             'is_created_in_devaa': is_created_in_devaa,
+            'has_rework': has_rework,
             'title': self.title,
             'description': self.description,
             'acceptance_criteria': self.acceptance_criteria,

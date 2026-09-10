@@ -69,7 +69,8 @@ class BranchPRAgent(BaseAgent):
                     dev_summary=developer_output.get('summary', ''),
                     files_list=files_list or "No files listed"
                 ),
-                system_instruction="Respond ONLY with valid JSON."
+                system_instruction="Respond ONLY with valid JSON.",
+                agent_name="BranchPR"
             )
             import json
             llm_response = llm_response.strip()

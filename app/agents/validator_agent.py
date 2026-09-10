@@ -59,16 +59,27 @@ class ValidatorAgent(BaseAgent):
             for c in changes
         ]) or "No changes provided."
 
+        qa_feedback = context.get('qa_feedback')
+        rework_section = ""
+        if qa_feedback:
+            rework_section = f"""
+
+⚠️ REWORK VERIFICATION — Previous QA Rejection:
+You MUST specifically confirm whether these previously-rejected issues have been addressed and resolved:
+{qa_feedback}
+"""
+
         prompt = VALIDATOR_PROMPT_TEMPLATE.format(
             acceptance_criteria=acceptance_criteria,
             dev_summary=developer_output.get('summary', 'No summary provided'),
             changes_list=changes_list
-        )
+        ) + rework_section
 
         try:
             llm_response = LLMService.generate_response(
                 prompt=prompt,
-                system_instruction="You are a strict QA validator. Respond ONLY with valid JSON."
+                system_instruction="You are a strict QA validator. Respond ONLY with valid JSON.",
+                agent_name="Validator"
             )
 
             import json
