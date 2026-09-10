@@ -197,3 +197,52 @@ class JiraTaskProvider(BaseTaskProvider):
         except Exception as e:
             logger.exception(f"Exception during Jira update_status: {e}")
             return False
+
+    def create_task(
+        self,
+        title: str,
+        description: str = "",
+        acceptance_criteria: str = "",
+        priority: str = "Medium",
+        assignee_email: str = None,
+        assignee_account_id: str = None,
+        issue_type: str = "Story",
+        project_key: str = None,
+        target_status: str = None,
+        start_date: str = None,
+        sprint_id: int | str = None,
+        due_date: str = None,
+        story_points: float | int | str = None,
+        labels: list | str = None
+    ) -> Optional[dict]:
+        from app.services.jira_service import JiraService
+        result = JiraService.create_issue(
+            title=title,
+            description=description,
+            acceptance_criteria=acceptance_criteria,
+            priority=priority,
+            assignee=assignee_email,
+            assignee_account_id=assignee_account_id,
+            issue_type=issue_type,
+            project_key=project_key,
+            due_date=due_date,
+            story_points=story_points,
+            labels=labels,
+            target_status=target_status,
+            start_date=start_date,
+            sprint_id=sprint_id
+        )
+        if result and "key" in result:
+            return {
+                "external_id": result["key"],
+                "key": result["key"],
+                "id": result.get("id"),
+                "raw": result
+            }
+        return result
+
+    def add_attachment(self, task_id: str, filename: str, file_data: bytes, mime_type: str = None) -> Optional[dict]:
+        from app.services.jira_service import JiraService
+        return JiraService.add_attachment(task_id, filename, file_data, mime_type)
+
+

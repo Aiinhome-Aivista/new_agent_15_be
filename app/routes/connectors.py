@@ -23,9 +23,11 @@ def get_connector_status():
         return jsonify({
             "active_provider": "jira",
             "connected": True,
+            "project": current_app.config.get('JIRA_PROJECT_KEY', ''),
             "details": {
                 "base_url": current_app.config.get('JIRA_BASE_URL', ''),
-                "account": masked_email
+                "account": masked_email,
+                "project": current_app.config.get('JIRA_PROJECT_KEY', '')
             }
         }), 200
         
@@ -34,3 +36,27 @@ def get_connector_status():
         "connected": False,
         "details": {}
     }), 200
+
+
+@connectors_bp.route('/jira/resources', methods=['GET'])
+@require_auth
+@require_role(['Product Owner', 'Admin'])
+def get_jira_resources():
+    """
+    Fetch available Jira projects and assignable users for dropdowns.
+    """
+    from flask import request
+    from app.services.jira_service import JiraService
+
+    project_key = request.args.get('project_key')
+    projects = JiraService.get_projects()
+    users = JiraService.get_assignable_users(project_key=project_key)
+    sprints = JiraService.get_sprints(project_key=project_key)
+
+    return jsonify({
+        "projects": projects,
+        "users": users,
+        "sprints": sprints,
+        "default_project": current_app.config.get('JIRA_PROJECT_KEY', '')
+    }), 200
+
