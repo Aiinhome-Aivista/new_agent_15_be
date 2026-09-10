@@ -212,8 +212,14 @@ def create_story():
             "due_date": due_date,
             "story_points": story_points,
             "labels": labels,
-            "attachments": uploaded_attachments
+            "attachments": uploaded_attachments,
+            "created_in_devaa": True,
+            "origin": "devaa"
         }]
+    elif isinstance(repository_details, list) and len(repository_details) > 0 and isinstance(repository_details[0], dict):
+        repository_details[0]["created_in_devaa"] = True
+        repository_details[0]["origin"] = "devaa"
+
 
     story = Story(
         title=title,
@@ -292,7 +298,7 @@ def upload_story_attachments(story_id):
 @require_auth
 @require_role(['Product Owner', 'Admin'])
 def update_story(story_id):
-    """Update a story. Only owner or Admin."""
+    """Update a story. Editable only when in TO-DO status. Only owner or Admin."""
     story = Story.query.get_or_404(story_id)
     user = request.current_user
     from app.models.role import Role
@@ -301,15 +307,83 @@ def update_story(story_id):
     if story.owner_id != user.id and (role and role.name != 'Admin'):
         return jsonify({"error": "You can only edit your own stories"}), 403
 
-    data = request.get_json()
-    updatable = ['title', 'description', 'acceptance_criteria', 'repository_details',
-                 'source_branch', 'assignee_id', 'jira_story_key']
-    for field in updatable:
-        if field in data:
-            setattr(story, field, data[field])
+    # Enforce TO-DO status rule
+    norm_status = (story.status or '').upper().replace('-', '').replace('_', '').replace(' ', '')
+    if norm_status not in ['TODO', 'OPEN']:
+        return jsonify({"error": f"Story cannot be edited because it is in '{story.status}' status. Only TO-DO stories can be edited."}), 400
+
+
+    data = request.get_json() or {}
+
+    title = data.get('title')
+    description = data.get('description')
+    acceptance_criteria = data.get('acceptance_criteria')
+    priority = data.get('priority')
+    assignee = data.get('assignee')
+    assignee_account_id = data.get('assignee_account_id')
+    story_points = data.get('story_points')
+    due_date = data.get('due_date')
+    labels = data.get('labels')
+    source_branch = data.get('source_branch')
+
+    if title is not None:
+        if not title.strip():
+            return jsonify({"error": "Title cannot be empty"}), 400
+        story.title = title.strip()
+
+    if description is not None:
+        story.description = description
+    if acceptance_criteria is not None:
+        story.acceptance_criteria = acceptance_criteria
+    if source_branch is not None:
+        story.source_branch = source_branch
+
+    # Update repository_details metadata
+    details = list(story.repository_details or [{}])
+    if not details:
+        details = [{}]
+    first_det = dict(details[0])
+
+    if priority is not None:
+        first_det['priority'] = priority
+    if assignee is not None:
+        first_det['external_assignee'] = assignee
+    if story_points is not None:
+        first_det['story_points'] = story_points
+    if due_date is not None:
+        first_det['due_date'] = due_date
+    if labels is not None:
+        first_det['labels'] = labels
+
+    details[0] = first_det
+    story.repository_details = details
+
+    # Sync updates directly to Jira Cloud if linked
+    jira_update_res = None
+    if story.jira_story_key:
+        try:
+            jira_update_res = JiraService.update_issue(
+                issue_key=story.jira_story_key,
+                title=title,
+                description=description,
+                acceptance_criteria=acceptance_criteria,
+                priority=priority,
+                assignee=assignee,
+                assignee_account_id=assignee_account_id,
+                due_date=due_date,
+                story_points=story_points,
+                labels=labels
+            )
+            logger.info(f"Synced story {story.id} updates to Jira {story.jira_story_key}: {jira_update_res}")
+        except Exception as ex:
+            logger.warning(f"Failed to sync story updates to Jira: {ex}")
 
     db.session.commit()
-    return jsonify(story.to_dict()), 200
+    res_dict = story.to_dict()
+    if jira_update_res and jira_update_res.get('error'):
+        res_dict['warning'] = f"Updated locally, but Jira update had warning: {jira_update_res['error']}"
+    return jsonify(res_dict), 200
+
 
 
 @stories_bp.route('/<int:story_id>/run', methods=['POST'])

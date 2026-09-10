@@ -32,11 +32,24 @@ class Story(db.Model):
     )
 
     def to_dict(self):
+        details = self.repository_details or [{}]
+        first_det = details[0] if isinstance(details, list) and len(details) > 0 and isinstance(details[0], dict) else {}
+        is_created_in_devaa = bool(
+            first_det.get('created_in_devaa') or
+            first_det.get('origin') == 'devaa' or
+            first_det.get('priority') or
+            first_det.get('labels') or
+            first_det.get('attachments') or
+            first_det.get('story_points') or
+            first_det.get('start_date') or
+            self.external_provider == 'manual'
+        )
         return {
             'id': self.id,
             'jira_story_key': self.jira_story_key,
             'external_task_id': self.external_task_id,
             'external_provider': self.external_provider,
+            'is_created_in_devaa': is_created_in_devaa,
             'title': self.title,
             'description': self.description,
             'acceptance_criteria': self.acceptance_criteria,
@@ -47,3 +60,4 @@ class Story(db.Model):
             'status': self.status,
             'created_at': self.created_at.isoformat() if self.created_at else None,
         }
+

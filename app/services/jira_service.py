@@ -490,6 +490,105 @@ class JiraService:
             return {"error": str(e)}
 
     @classmethod
+    def update_issue(
+        cls,
+        issue_key: str,
+        title: str = None,
+        description: str = None,
+        acceptance_criteria: str = None,
+        priority: str = None,
+        assignee: str = None,
+        assignee_account_id: str = None,
+        due_date: str = None,
+        story_points: float | int | str = None,
+        labels: list | str = None
+    ) -> dict:
+        """
+        Update an existing Jira issue's fields.
+        PUT /rest/api/3/issue/{issueIdOrKey}
+        """
+        if not cls._is_configured() or not issue_key:
+            return {"error": "Jira not configured or missing issue key"}
+
+        fields = {}
+        if title:
+            fields["summary"] = title.strip()
+
+        # Update description + acceptance criteria if provided
+        if description is not None or acceptance_criteria is not None:
+            content_nodes = []
+            if description:
+                content_nodes.append({
+                    "type": "paragraph",
+                    "content": [{"type": "text", "text": description}]
+                })
+            if acceptance_criteria:
+                content_nodes.append({
+                    "type": "paragraph",
+                    "content": [{"type": "text", "text": f"\nAcceptance Criteria:\n{acceptance_criteria}"}]
+                })
+            if content_nodes:
+                fields["description"] = {
+                    "type": "doc",
+                    "version": 1,
+                    "content": content_nodes
+                }
+
+        if priority:
+            fields["priority"] = {"name": priority.strip().capitalize()}
+
+        if due_date is not None:
+            fields["duedate"] = due_date.strip() if due_date else None
+
+        if labels is not None:
+            if isinstance(labels, str):
+                raw_labels = [l.strip() for l in labels.split(',') if l.strip()]
+            elif isinstance(labels, (list, tuple)):
+                raw_labels = [str(l).strip() for l in labels if str(l).strip()]
+            else:
+                raw_labels = []
+            fields["labels"] = [l.replace(' ', '_') for l in raw_labels if l]
+
+        if assignee_account_id and assignee_account_id.strip():
+            fields["assignee"] = {"id": assignee_account_id.strip()}
+        elif assignee and assignee.strip():
+            user_obj = cls.find_user(assignee.strip())
+            if user_obj and "accountId" in user_obj:
+                fields["assignee"] = {"id": user_obj["accountId"]}
+
+        url = f"{cls._base().rstrip('/')}/rest/api/3/issue/{issue_key}"
+        try:
+            if fields:
+                resp = requests.put(url, auth=cls._auth(), json={"fields": fields},
+                                    headers={"Content-Type": "application/json", "Accept": "application/json"})
+                if resp.status_code not in [200, 204]:
+                    logger.warning(f"Jira update_issue returned {resp.status_code}: {resp.text}")
+
+            # Update story points if provided
+            if story_points is not None and str(story_points).strip():
+                try:
+                    sp_val = float(str(story_points).strip())
+                    sp_field = cls.find_field_id("story points") or cls.find_field_id("story point estimate")
+                    candidates = [c for c in [sp_field, "customfield_10016", "customfield_10026", "customfield_10028"] if c]
+                    for cand in candidates:
+                        try:
+                            up_resp = requests.put(url, auth=cls._auth(),
+                                                   json={"fields": {cand: sp_val}},
+                                                   headers={"Content-Type": "application/json"})
+                            if up_resp.status_code in [200, 204]:
+                                break
+                        except Exception:
+                            pass
+                except Exception as ex:
+                    logger.warning(f"Failed to update story points on Jira: {ex}")
+
+            logger.info(f"Updated Jira issue {issue_key}")
+            return {"success": True, "key": issue_key}
+        except Exception as e:
+            logger.exception(f"Error updating Jira issue {issue_key}: {e}")
+            return {"error": str(e)}
+
+    @classmethod
     def search_stories(cls, project_key: str, status: str = "To Do") -> list:
         """Search for stories in a project with a given status."""
         if not cls._is_configured():
@@ -503,6 +602,7 @@ class JiraService:
             return resp.json().get('issues', [])
         logger.error(f"Jira search failed: {resp.status_code} {resp.text}")
         return []
+
 
 
 
