@@ -132,25 +132,8 @@ class RepoAnalysisAgent(BaseAgent):
 
         rag_context = ""
         if repo_texts:
-            try:
-                from langchain.text_splitter import RecursiveCharacterTextSplitter
-                from langchain_community.embeddings import HuggingFaceEmbeddings
-                from langchain_community.vectorstores import Chroma
-                
-                text_splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=200)
-                docs = text_splitter.create_documents(repo_texts)
-                
-                embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
-                vectorstore = Chroma.from_documents(documents=docs, embedding=embeddings)
-                
-                query = f"{title}\n{description}\n{acceptance_criteria}"
-                if context.get('qa_feedback'):
-                    query += f"\nQA REJECTION FEEDBACK:\n{context.get('qa_feedback')}"
-                relevant_docs = vectorstore.similarity_search(query, k=15)
-                rag_context = "\n\n".join([doc.page_content for doc in relevant_docs])
-            except Exception as e:
-                self.logger.warning(f"RAG embedding failed, using direct repository file context: {e}")
-                rag_context = "\n\n".join(repo_texts[:8])
+            # Ingest repository files directly into context
+            rag_context = "\n\n".join(repo_texts[:15])
         else:
             rag_context = "No relevant repository context could be loaded (check ALLOWED_REPO_PREFIXES or token)."
 
