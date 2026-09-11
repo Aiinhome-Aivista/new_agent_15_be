@@ -3,6 +3,7 @@ from app import db
 from app.models.devaa_models import QAReview, PullRequest, AuditLog
 from app.models.story import Story
 from app.models.workflow import Workflow
+from app.models.user import User
 from app.utils.auth import require_auth, require_role
 import logging
 
@@ -38,6 +39,86 @@ def qa_queue():
         })
 
     return jsonify(result), 200
+
+
+@qa_bp.route('/approved', methods=['GET'])
+@require_auth
+@require_role(['QA Reviewer', 'Admin', 'Product Owner', 'Engineering Lead'])
+def qa_approved():
+    """
+    List all stories approved by QA with review details, reviewer, PR, and workflow metadata.
+    """
+    reviews = QAReview.query.filter_by(decision='approved').order_by(QAReview.created_at.desc()).all()
+
+    result = []
+    seen_story_ids = set()
+
+    for review in reviews:
+        story = Story.query.get(review.story_id) if review.story_id else None
+        if not story:
+            continue
+        seen_story_ids.add(story.id)
+
+        pr = PullRequest.query.get(review.pr_id) if review.pr_id else None
+        if not pr and review.story_id:
+            pr = PullRequest.query.filter_by(story_id=review.story_id).order_by(PullRequest.id.desc()).first()
+
+        workflow = Workflow.query.get(review.workflow_id) if review.workflow_id else None
+        reviewer = User.query.get(review.reviewer_id) if review.reviewer_id else None
+
+        result.append({
+            'review_id': review.id,
+            'story_id': story.id,
+            'story': story.to_dict(),
+            'decision': review.decision,
+            'comments': review.comments or '',
+            'approved_at': review.created_at.isoformat() if review.created_at else None,
+            'reviewer': {
+                'id': reviewer.id,
+                'name': reviewer.name,
+                'email': reviewer.email
+            } if reviewer else None,
+            'pr': pr.to_dict() if pr else None,
+            'workflow': {
+                'id': workflow.id,
+                'status': workflow.status,
+                'current_agent': workflow.current_agent,
+                'created_at': workflow.created_at.isoformat() if workflow.created_at else None,
+            } if workflow else None,
+        })
+
+    # Include any DONE stories not yet in seen_story_ids
+    done_stories = Story.query.filter_by(status='DONE').order_by(Story.updated_at.desc()).all()
+    for story in done_stories:
+        if story.id in seen_story_ids:
+            continue
+
+        pr = PullRequest.query.filter_by(story_id=story.id).order_by(PullRequest.id.desc()).first()
+        workflow = Workflow.query.filter_by(story_id=story.id).order_by(Workflow.id.desc()).first()
+
+        result.append({
+            'review_id': None,
+            'story_id': story.id,
+            'story': story.to_dict(),
+            'decision': 'approved',
+            'comments': 'Approved and merged to target branch.',
+            'approved_at': (story.updated_at or story.created_at).isoformat() if (story.updated_at or story.created_at) else None,
+            'reviewer': {
+                'id': None,
+                'name': 'QA Reviewer',
+                'email': 'qa@devaa.local'
+            },
+            'pr': pr.to_dict() if pr else None,
+            'workflow': {
+                'id': workflow.id,
+                'status': workflow.status,
+                'current_agent': workflow.current_agent,
+                'created_at': workflow.created_at.isoformat() if workflow.created_at else None,
+            } if workflow else None,
+        })
+
+    return jsonify(result), 200
+
 
 
 @qa_bp.route('/<int:story_id>/decision', methods=['POST'])
