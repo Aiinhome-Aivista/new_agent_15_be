@@ -346,6 +346,18 @@ class Orchestrator:
             )
             evidence_bytes = evidence_md.encode('utf-8')
 
+            # Save evidence.md locally to workspace root
+            try:
+                import os
+                from flask import current_app
+                proj_root = os.path.abspath(os.path.join(current_app.root_path, '..', '..'))
+                local_evidence_path = os.path.join(proj_root, evidence_filename)
+                with open(local_evidence_path, 'w', encoding='utf-8') as ef:
+                    ef.write(evidence_md)
+                logger.info(f"[Orchestrator] Saved evidence locally to {local_evidence_path}")
+            except Exception as fe:
+                logger.warning(f"[Orchestrator] Failed to write local evidence file: {fe}")
+
             # Attach evidence.md to Jira issue
             if jira_key and evidence_bytes:
                 try:
