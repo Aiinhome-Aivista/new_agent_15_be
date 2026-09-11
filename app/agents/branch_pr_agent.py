@@ -78,7 +78,6 @@ class BranchPRAgent(BaseAgent):
                 story.get('description', '') if isinstance(story, dict) else '',
                 story.get('title', '') if isinstance(story, dict) else ''
             ]
-            import re
             for t in texts_to_check:
                 if t:
                     tb_m = re.search(r'target_branch\s*[:=]\s*([^\s\n\r,;|]+)', t, re.IGNORECASE)
@@ -212,100 +211,117 @@ class BranchPRAgent(BaseAgent):
             "Accept": "application/vnd.github.v3+json"
         }
 
-        # ── Clone repo, checkout/create branch, apply real changes, commit & push ──
+        # ── Clone repo into project directory, checkout/create branch, apply real changes, commit & push ──
         auth_repo_url = f"https://x-access-token:{github_token}@github.com/{org}/{repo_name}.git"
         
-        with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temp_dir:
-            try:
-                self.logger.info(f"Cloning {org}/{repo_name} to apply changes on branch '{branch_name}'...")
+        from flask import current_app
+        repos_root = os.path.abspath(os.path.join(current_app.root_path, '..', 'repos'))
+        os.makedirs(repos_root, exist_ok=True)
+        repo_dir = os.path.join(repos_root, repo_name)
+
+        try:
+            self.logger.info(f"Using project repository at '{repo_dir}' for branch '{branch_name}'...")
+            if not os.path.exists(os.path.join(repo_dir, '.git')):
+                self.logger.info(f"Cloning {org}/{repo_name} into project folder '{repo_dir}'...")
+                if os.path.exists(repo_dir):
+                    import shutil
+                    shutil.rmtree(repo_dir, ignore_errors=True)
                 clone_res = subprocess.run(
-                    ['git', 'clone', '--depth', '50', '-b', base_branch, auth_repo_url, temp_dir],
+                    ['git', 'clone', '--depth', '50', '-b', base_branch, auth_repo_url, repo_dir],
                     capture_output=True, text=True
                 )
                 if clone_res.returncode != 0:
                     self.logger.warning(f"Branch-specific clone failed, trying default clone: {clone_res.stderr}")
-                    clone_default = subprocess.run(['git', 'clone', auth_repo_url, temp_dir], capture_output=True, text=True)
+                    clone_default = subprocess.run(['git', 'clone', auth_repo_url, repo_dir], capture_output=True, text=True)
                     if clone_default.returncode != 0:
-                        err = f"Failed to clone repository: {clone_default.stderr.strip()}"
+                        err = f"Failed to clone repository into {repo_dir}: {clone_default.stderr.strip()}"
                         self.logger.error(err)
                         return None, None, err
+            else:
+                subprocess.run(['git', 'remote', 'set-url', 'origin', auth_repo_url], cwd=repo_dir, check=True)
+                subprocess.run(['git', 'fetch', 'origin'], cwd=repo_dir, check=True)
 
-                # Configure git user identity
-                subprocess.run(['git', 'config', 'user.name', 'DEVAA Bot'], cwd=temp_dir, check=True)
-                subprocess.run(['git', 'config', 'user.email', 'devaa-bot@users.noreply.github.com'], cwd=temp_dir, check=True)
+            # Configure git user identity
+            subprocess.run(['git', 'config', 'user.name', 'DEVAA Bot'], cwd=repo_dir, check=True)
+            subprocess.run(['git', 'config', 'user.email', 'devaa-bot@users.noreply.github.com'], cwd=repo_dir, check=True)
 
-                # Check if target branch exists on remote
-                ls_remote = subprocess.run(
-                    ['git', 'ls-remote', '--heads', 'origin', branch_name],
-                    cwd=temp_dir, capture_output=True, text=True
-                )
-                if branch_name in ls_remote.stdout:
-                    self.logger.info(f"Checking out existing remote branch '{branch_name}'")
-                    subprocess.run(['git', 'fetch', 'origin', branch_name], cwd=temp_dir, check=True)
-                    subprocess.run(['git', 'checkout', branch_name], cwd=temp_dir, check=True)
-                    subprocess.run(['git', 'pull', 'origin', branch_name], cwd=temp_dir, capture_output=True)
+            # Check if target branch exists on remote
+            ls_remote = subprocess.run(
+                ['git', 'ls-remote', '--heads', 'origin', branch_name],
+                cwd=repo_dir, capture_output=True, text=True
+            )
+            if branch_name in ls_remote.stdout:
+                self.logger.info(f"Checking out existing remote branch '{branch_name}'")
+                subprocess.run(['git', 'checkout', branch_name], cwd=repo_dir, check=True)
+                subprocess.run(['git', 'pull', 'origin', branch_name], cwd=repo_dir, capture_output=True)
+            else:
+                self.logger.info(f"Checking out base branch '{base_branch}' and creating '{branch_name}'")
+                subprocess.run(['git', 'checkout', base_branch], cwd=repo_dir, check=True)
+                subprocess.run(['git', 'pull', 'origin', base_branch], cwd=repo_dir, capture_output=True)
+                local_b = subprocess.run(['git', 'branch', '--list', branch_name], cwd=repo_dir, capture_output=True, text=True)
+                if branch_name in local_b.stdout:
+                    subprocess.run(['git', 'checkout', branch_name], cwd=repo_dir, check=True)
                 else:
-                    self.logger.info(f"Creating and checking out new branch '{branch_name}' from '{base_branch}'")
-                    subprocess.run(['git', 'checkout', '-b', branch_name], cwd=temp_dir, check=True)
+                    subprocess.run(['git', 'checkout', '-b', branch_name], cwd=repo_dir, check=True)
 
-                # Apply real code changes directly to actual files
-                for c in changes:
-                    rel_file = c.get('file')
-                    if not rel_file:
-                        continue
-                    full_file_path = os.path.join(temp_dir, rel_file.replace('/', os.sep))
-                    os.makedirs(os.path.dirname(full_file_path), exist_ok=True)
-                    
-                    action = c.get('action', 'modify')
-                    if action == 'delete':
-                        if os.path.exists(full_file_path):
-                            os.remove(full_file_path)
-                            self.logger.info(f"Deleted file: {rel_file}")
-                        continue
-
-                    full_content = c.get('full_content')
-                    code_snippet = c.get('code_snippet') or c.get('code') or ''
-
-                    if full_content:
-                        with open(full_file_path, 'w', encoding='utf-8') as f:
-                            f.write(full_content)
-                        self.logger.info(f"Wrote full production code to: {rel_file}")
-                    elif code_snippet:
-                        if not os.path.exists(full_file_path):
-                            with open(full_file_path, 'w', encoding='utf-8') as f:
-                                f.write(code_snippet)
-                            self.logger.info(f"Created new file with code snippet: {rel_file}")
-                        else:
-                            with open(full_file_path, 'r', encoding='utf-8') as f:
-                                existing_code = f.read()
-                            if code_snippet not in existing_code:
-                                with open(full_file_path, 'a', encoding='utf-8') as f:
-                                    f.write(f"\n{code_snippet}\n")
-                                self.logger.info(f"Appended code snippet to: {rel_file}")
-
-                # Git add, commit, and push
-                subprocess.run(['git', 'add', '-A'], cwd=temp_dir, check=True)
-                status_res = subprocess.run(['git', 'status', '--porcelain'], cwd=temp_dir, capture_output=True, text=True)
+            # Apply real code changes directly to actual files
+            for c in changes:
+                rel_file = c.get('file')
+                if not rel_file:
+                    continue
+                full_file_path = os.path.join(repo_dir, rel_file.replace('/', os.sep))
+                os.makedirs(os.path.dirname(full_file_path), exist_ok=True)
                 
-                jira_key = story.jira_story_key if hasattr(story, 'jira_story_key') else (story.get('jira_story_key', '') if isinstance(story, dict) else '')
-                commit_msg = f"feat({jira_key or 'DEVAA'}): {pr_title}\n\nAutomated implementation by DEVAA pipeline adhering to repository patterns."
-                if status_res.stdout.strip():
-                    subprocess.run(['git', 'commit', '-m', commit_msg], cwd=temp_dir, check=True)
-                    self.logger.info(f"Committed code changes to branch '{branch_name}'.")
+                action = c.get('action', 'modify')
+                if action == 'delete':
+                    if os.path.exists(full_file_path):
+                        os.remove(full_file_path)
+                        self.logger.info(f"Deleted file: {rel_file}")
+                    continue
 
-                self.logger.info(f"Pushing branch '{branch_name}' to remote...")
-                push_res = subprocess.run(['git', 'push', '-u', 'origin', branch_name], cwd=temp_dir, capture_output=True, text=True)
-                if push_res.returncode == 0:
-                    self.logger.info(f"Successfully pushed branch '{branch_name}' to GitHub.")
-                else:
-                    err = f"Git push failed: {push_res.stderr.strip()}"
-                    self.logger.error(err)
-                    return None, None, err
+                full_content = c.get('full_content')
+                code_snippet = c.get('code_snippet') or c.get('code') or ''
 
-            except Exception as git_err:
-                err = f"Git operations failed: {git_err}"
+                if full_content:
+                    with open(full_file_path, 'w', encoding='utf-8') as f:
+                        f.write(full_content)
+                    self.logger.info(f"Wrote full production code to: {rel_file}")
+                elif code_snippet:
+                    if not os.path.exists(full_file_path):
+                        with open(full_file_path, 'w', encoding='utf-8') as f:
+                            f.write(code_snippet)
+                        self.logger.info(f"Created new file with code snippet: {rel_file}")
+                    else:
+                        with open(full_file_path, 'r', encoding='utf-8') as f:
+                            existing_code = f.read()
+                        if code_snippet not in existing_code:
+                            with open(full_file_path, 'a', encoding='utf-8') as f:
+                                f.write(f"\n{code_snippet}\n")
+                            self.logger.info(f"Appended code snippet to: {rel_file}")
+
+            # Git add, commit, and push
+            subprocess.run(['git', 'add', '-A'], cwd=repo_dir, check=True)
+            status_res = subprocess.run(['git', 'status', '--porcelain'], cwd=repo_dir, capture_output=True, text=True)
+            
+            jira_key = story.jira_story_key if hasattr(story, 'jira_story_key') else (story.get('jira_story_key', '') if isinstance(story, dict) else '')
+            commit_msg = f"feat({jira_key or 'DEVAA'}): {pr_title}\n\nAutomated implementation by DEVAA pipeline adhering to repository patterns."
+            if status_res.stdout.strip():
+                subprocess.run(['git', 'commit', '-m', commit_msg], cwd=repo_dir, check=True)
+                self.logger.info(f"Committed code changes to branch '{branch_name}'.")
+
+            self.logger.info(f"Pushing branch '{branch_name}' to remote...")
+            push_res = subprocess.run(['git', 'push', '-u', 'origin', branch_name], cwd=repo_dir, capture_output=True, text=True)
+            if push_res.returncode == 0:
+                self.logger.info(f"Successfully pushed branch '{branch_name}' to GitHub.")
+            else:
+                err = f"Git push failed: {push_res.stderr.strip()}"
                 self.logger.error(err)
                 return None, None, err
+
+        except Exception as git_err:
+            err = f"Git operations failed: {git_err}"
+            self.logger.error(err)
+            return None, None, err
 
         # ── Open Pull Request via GitHub REST API ──────────────────
         try:

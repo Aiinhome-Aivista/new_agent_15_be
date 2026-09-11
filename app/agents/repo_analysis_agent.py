@@ -92,43 +92,65 @@ class RepoAnalysisAgent(BaseAgent):
                 self.logger.warning(f"Repo {repo_url} not in ALLOWED_REPO_PREFIXES.")
                 continue
 
-            # Clone and inspect real repository files
-            with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temp_dir:
-                try:
-                    github_token = self.config.get('GITHUB_TOKEN')
-                    clone_url = repo_url
-                    if github_token and "github.com" in repo_url:
-                        clone_url = repo_url.replace("https://github.com/", f"https://x-access-token:{github_token}@github.com/")
+            # Clone and inspect real repository files inside project directory
+            repo_name = "repo"
+            if repo_url and 'github.com' in repo_url:
+                parts = repo_url.split('github.com/')[-1].replace('.git', '').strip('/').split('/')
+                if len(parts) >= 2:
+                    repo_name = parts[1]
 
-                    target_branch = source_branch or repo.get('branch') or self.config.get('GITHUB_DEFAULT_BASE_BRANCH', 'main')
-                    clone_cmd = ['git', 'clone', '--depth', '1']
+            from flask import current_app
+            repos_root = os.path.abspath(os.path.join(current_app.root_path, '..', 'repos'))
+            os.makedirs(repos_root, exist_ok=True)
+            repo_dir = os.path.join(repos_root, repo_name)
+
+            try:
+                github_token = self.config.get('GITHUB_TOKEN')
+                clone_url = repo_url
+                if github_token and "github.com" in repo_url:
+                    clone_url = repo_url.replace("https://github.com/", f"https://x-access-token:{github_token}@github.com/")
+
+                target_branch = source_branch or repo.get('branch') or self.config.get('GITHUB_DEFAULT_BASE_BRANCH', 'main')
+
+                if os.path.exists(os.path.join(repo_dir, '.git')):
+                    self.logger.info(f"Using existing project repository at '{repo_dir}'")
+                    subprocess.run(['git', 'remote', 'set-url', 'origin', clone_url], cwd=repo_dir, check=True)
+                    subprocess.run(['git', 'fetch', 'origin'], cwd=repo_dir, check=True)
+                    subprocess.run(['git', 'checkout', target_branch], cwd=repo_dir, capture_output=True)
+                    subprocess.run(['git', 'pull', 'origin', target_branch], cwd=repo_dir, capture_output=True)
+                else:
+                    self.logger.info(f"Cloning repository into project folder '{repo_dir}'...")
+                    if os.path.exists(repo_dir):
+                        import shutil
+                        shutil.rmtree(repo_dir, ignore_errors=True)
+                    clone_cmd = ['git', 'clone', '--depth', '50']
                     if target_branch:
                         clone_cmd.extend(['-b', target_branch])
-                    clone_cmd.extend([clone_url, temp_dir])
+                    clone_cmd.extend([clone_url, repo_dir])
 
                     try:
                         subprocess.check_call(clone_cmd)
                     except subprocess.CalledProcessError:
                         self.logger.warning(f"Branch '{target_branch}' not found on remote, falling back to default clone.")
-                        subprocess.check_call(['git', 'clone', '--depth', '1', clone_url, temp_dir])
-                    
-                    # Read all repository source files
-                    for root, _, files in os.walk(temp_dir):
-                        if '.git' in root or 'node_modules' in root or 'venv' in root:
-                            continue
-                        for file in files:
-                            if file.endswith(('.py', '.js', '.jsx', '.ts', '.tsx', '.md', '.html', '.css', '.json', '.txt')):
-                                file_path = os.path.join(root, file)
-                                try:
-                                    with open(file_path, 'r', encoding='utf-8') as f:
-                                        content = f.read()
-                                        rel_path = os.path.relpath(file_path, temp_dir).replace('\\', '/')
-                                        repo_files_map[rel_path] = content
-                                        repo_texts.append(f"File: {rel_path}\n{content}")
-                                except Exception:
-                                    pass
-                except Exception as e:
-                    self.logger.error(f"Failed to clone/read repo {repo_url}: {e}")
+                        subprocess.check_call(['git', 'clone', '--depth', '50', clone_url, repo_dir])
+
+                # Read all repository source files directly from project folder
+                for root, _, files in os.walk(repo_dir):
+                    if '.git' in root or 'node_modules' in root or 'venv' in root:
+                        continue
+                    for file in files:
+                        if file.endswith(('.py', '.js', '.jsx', '.ts', '.tsx', '.md', '.html', '.css', '.json', '.txt')):
+                            file_path = os.path.join(root, file)
+                            try:
+                                with open(file_path, 'r', encoding='utf-8') as f:
+                                    content = f.read()
+                                    rel_path = os.path.relpath(file_path, repo_dir).replace('\\', '/')
+                                    repo_files_map[rel_path] = content
+                                    repo_texts.append(f"File: {rel_path}\n{content}")
+                            except Exception:
+                                pass
+            except Exception as e:
+                self.logger.error(f"Failed to clone/read repo {repo_url} into {repo_dir}: {e}")
 
         rag_context = ""
         if repo_texts:

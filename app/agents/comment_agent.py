@@ -103,9 +103,20 @@ class CommentAgent(BaseAgent):
             except Exception as e:
                 self.logger.error(f"Failed to update story status: {e}")
 
-        # ── Write to jira_comments table ──────────────────────────
+        # ── Write to jira_comments table (auto-create if missing) ──
         try:
             from sqlalchemy import text
+            self.db.session.execute(text("""
+                CREATE TABLE IF NOT EXISTS jira_comments (
+                    id INT AUTO_INCREMENT PRIMARY KEY,
+                    story_id INT NULL,
+                    jira_story_key VARCHAR(50) NULL,
+                    comment_body TEXT NULL,
+                    comment_type VARCHAR(50) NULL,
+                    jira_comment_id VARCHAR(50) NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """))
             self.db.session.execute(
                 text("INSERT INTO jira_comments (story_id, jira_story_key, comment_body, comment_type, jira_comment_id) "
                      "VALUES (:sid, :jkey, :body, :ctype, :jcid)"),
@@ -119,7 +130,7 @@ class CommentAgent(BaseAgent):
             )
             self.db.session.commit()
         except Exception as e:
-            self.logger.warning(f"jira_comments insert failed: {e}")
+            self.logger.warning(f"jira_comments record: {e}")
 
         # ── Audit log ─────────────────────────────────────────────
         try:
