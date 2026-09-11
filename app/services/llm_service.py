@@ -103,7 +103,18 @@ class LLMService:
         ).lower()
 
         if provider == "gemini":
-            return LLMService._call_gemini(prompt, system_instruction, agent_name)
+            try:
+                return LLMService._call_gemini(prompt, system_instruction, agent_name)
+            except Exception as e:
+                # If Gemini fails, check if local/custom LLM endpoint is available as fallback
+                local_url = current_app.config.get("LLM_API_URL")
+                if local_url:
+                    logger.warning(f"[LLMService] Gemini failed for agent '{agent_name}' ({e}). Falling back to local LLM ({local_url})...")
+                    try:
+                        return LLMService._call_local(prompt, system_instruction)
+                    except Exception as local_e:
+                        logger.error(f"[LLMService] Local LLM fallback also failed: {local_e}")
+                raise e
         elif provider in ("custom", "local"):
             return LLMService._call_local(prompt, system_instruction)
         else:
@@ -123,20 +134,45 @@ class LLMService:
         api_key = _get_gemini_key(config, agent_name)
 
         genai.configure(api_key=api_key)
-        model_name = config.get("GEMINI_MODEL", "gemini-1.5-flash")
+        preferred_model = config.get("GEMINI_MODEL", "gemini-1.5-flash")
 
         kwargs = {}
         if system_instruction:
             kwargs["system_instruction"] = system_instruction
 
-        model = genai.GenerativeModel(model_name, **kwargs)
+        candidate_models = [
+            preferred_model,
+            "gemini-1.5-flash-latest",
+            "gemini-1.5-flash",
+            "gemini-1.5-pro",
+            "gemini-2.0-flash",
+            "gemini-pro"
+        ]
+        # Deduplicate candidates while keeping order
+        seen_models = set()
+        models_to_try = []
+        for m in candidate_models:
+            if m and m not in seen_models:
+                seen_models.add(m)
+                models_to_try.append(m)
 
-        try:
-            response = model.generate_content(prompt)
-            return response.text
-        except Exception as e:
-            logger.error(f"[LLMService] Gemini API error (agent={agent_name}): {e}")
-            raise RuntimeError(f"Gemini API Error: {str(e)}")
+        last_error = None
+        for m_name in models_to_try:
+            try:
+                model = genai.GenerativeModel(m_name, **kwargs)
+                response = model.generate_content(prompt)
+                return response.text
+            except Exception as e:
+                last_error = e
+                err_msg = str(e)
+                if "404" in err_msg or "not found" in err_msg.lower():
+                    logger.warning(f"[LLMService] Model '{m_name}' returned 404 for agent '{agent_name}'. Trying next model candidate...")
+                    continue
+                else:
+                    break
+
+        logger.error(f"[LLMService] Gemini API error (agent={agent_name}): {last_error}")
+        raise RuntimeError(f"Gemini API Error: {str(last_error)}")
 
     @staticmethod
     def _call_local(
