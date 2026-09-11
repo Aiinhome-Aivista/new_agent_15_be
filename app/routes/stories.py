@@ -465,3 +465,40 @@ def get_story_status(story_id):
             "loop_iteration": latest_workflow.loop_iteration,
         } if latest_workflow else None
     }), 200
+
+
+@stories_bp.route('/<int:story_id>/pipeline-logs', methods=['GET'])
+@require_auth
+def get_pipeline_logs(story_id):
+    """
+    Return pipeline event logs for a story.
+    Supports incremental polling via ?since=<log_id> so the frontend
+    only fetches new entries after what it already has.
+    Returns at most 200 entries (oldest-first).
+    """
+    from app.models.devaa_models import PipelineLog
+
+    since_id = request.args.get('since', 0, type=int)
+    limit    = min(request.args.get('limit', 200, type=int), 500)
+
+    query = PipelineLog.query.filter(
+        PipelineLog.story_id == story_id,
+        PipelineLog.id > since_id,
+    ).order_by(PipelineLog.id.asc()).limit(limit)
+
+    logs = query.all()
+
+    # Also return the latest workflow status so the frontend knows if the
+    # run has finished.
+    latest_wf = Workflow.query.filter_by(story_id=story_id).order_by(
+        Workflow.created_at.desc()
+    ).first()
+
+    return jsonify({
+        "logs": [l.to_dict() for l in logs],
+        "workflow": {
+            "id":            latest_wf.id,
+            "status":        latest_wf.status,
+            "current_agent": latest_wf.current_agent,
+        } if latest_wf else None
+    }), 200

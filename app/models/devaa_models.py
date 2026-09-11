@@ -137,3 +137,37 @@ class AuditLog(db.Model):
             'event_data': self.event_data,
             'created_at': self.created_at.isoformat() if self.created_at else None,
         }
+
+
+class PipelineLog(db.Model):
+    """
+    Real-time pipeline event log — written by Orchestrator and agents.
+    Polled by the frontend every 2 s during a live run to display the
+    animated activity feed in the PO Dashboard.
+
+    level:  'info' | 'success' | 'warning' | 'error' | 'jira'
+    agent:  e.g. 'Intake', 'RepoAnalysis', 'Developer', 'Validator',
+                 'BranchPR', 'Comment', 'Orchestrator'
+    """
+    __tablename__ = 'pipeline_logs'
+
+    id          = db.Column(db.Integer, primary_key=True)
+    story_id    = db.Column(db.Integer, db.ForeignKey('stories.id'), nullable=False)
+    workflow_id = db.Column(db.Integer, db.ForeignKey('workflows.id'), nullable=True)
+    agent       = db.Column(db.String(100), nullable=False, default='Orchestrator')
+    level       = db.Column(db.String(20),  nullable=False, default='info')
+    message     = db.Column(db.Text, nullable=False)
+    detail      = db.Column(db.Text, nullable=True)   # optional extra context / JSON
+    created_at  = db.Column(db.DateTime, default=datetime.utcnow)
+
+    def to_dict(self):
+        return {
+            'id':          self.id,
+            'story_id':    self.story_id,
+            'workflow_id': self.workflow_id,
+            'agent':       self.agent,
+            'level':       self.level,
+            'message':     self.message,
+            'detail':      self.detail,
+            'created_at':  self.created_at.isoformat() if self.created_at else None,
+        }

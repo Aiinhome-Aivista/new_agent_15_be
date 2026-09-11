@@ -4,7 +4,7 @@ from app.models.role import Role
 from app.models.user import User
 from app.models.workflow import Workflow, WorkflowStep
 from app.models.story import Story
-from app.models.devaa_models import PullRequest, QAReview, GuardrailEvent, SuccessMetric, AuditLog
+from app.models.devaa_models import PullRequest, QAReview, GuardrailEvent, SuccessMetric, AuditLog, PipelineLog
 
 app = create_app()
 

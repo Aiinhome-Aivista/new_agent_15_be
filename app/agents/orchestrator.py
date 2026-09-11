@@ -20,6 +20,7 @@ from app.agents.validator_agent import ValidatorAgent
 from app.agents.branch_pr_agent import BranchPRAgent
 from app.agents.comment_agent import CommentAgent
 from app.agents.rework_handler import ReworkHandler
+from app.utils.pipeline_logger import log_event
 
 logger = logging.getLogger(__name__)
 
@@ -83,6 +84,12 @@ class Orchestrator:
         self._update_workflow_status(workflow, 'Running', 'Intake')
         logger.info(f"[Orchestrator] Starting workflow {workflow_id} (type={workflow.workflow_type})")
 
+        # ── Live Pipeline Log: kick-off ───────────────────────────
+        log_event(story_id=story_id or 0, workflow_id=workflow_id,
+                  agent='Orchestrator', level='info',
+                  message='🚀 DEVAA Pipeline started',
+                  detail=f'workflow_id={workflow_id}, type={workflow.workflow_type}')
+
         context_story = story or {
             'title': workflow.title,
             'description': workflow.requirements_doc,
@@ -98,6 +105,9 @@ class Orchestrator:
 
         if is_rework:
             logger.info(f"[Orchestrator] Rework workflow detected — loading QA feedback.")
+            log_event(story_id=story_id or 0, workflow_id=workflow_id,
+                      agent='ReworkHandler', level='info',
+                      message='🔄 Rework detected — loading QA rejection feedback')
             self._update_workflow_status(workflow, 'Running', 'ReworkHandler')
             rework_step = self._make_step(
                 workflow_id, 'ReworkHandler',
@@ -109,10 +119,16 @@ class Orchestrator:
             )
             if rework_result.success:
                 qa_feedback = rework_result.output.get('qa_feedback', '')
+                log_event(story_id=story_id or 0, workflow_id=workflow_id,
+                          agent='ReworkHandler', level='success',
+                          message=f'✅ QA feedback loaded ({len(qa_feedback)} chars)')
                 logger.info(
                     f"[Orchestrator] Rework QA feedback loaded: {len(qa_feedback)} chars"
                 )
             else:
+                log_event(story_id=story_id or 0, workflow_id=workflow_id,
+                          agent='ReworkHandler', level='warning',
+                          message=f'⚠️ ReworkHandler failed: {rework_result.error}')
                 logger.warning(
                     f"[Orchestrator] ReworkHandler failed: {rework_result.error}. "
                     f"Continuing without QA feedback."
@@ -121,6 +137,9 @@ class Orchestrator:
         # ═══════════════════════════════════════════════════════════
         # STEP 1 — INTAKE VALIDATION
         # ═══════════════════════════════════════════════════════════
+        log_event(story_id=story_id or 0, workflow_id=workflow_id,
+                  agent='Intake', level='info',
+                  message='📋 Intake Validation started — checking story completeness')
         self._update_workflow_status(workflow, 'Running', 'Intake')
         step1 = self._make_step(workflow_id, 'Intake', 'Validate story fields and completeness.')
         intake_agent = IntakeValidationAgent(db=db, config=config)
@@ -132,6 +151,9 @@ class Orchestrator:
         results['intake'] = intake_result.output
 
         if not intake_result.success:
+            log_event(story_id=story_id or 0, workflow_id=workflow_id,
+                      agent='Intake', level='error',
+                      message=f'❌ Intake Validation FAILED: {intake_result.error}')
             # Validation failed — story stays TO-DO
             step_c = self._make_step(workflow_id, 'Comment', 'Post validation failure comment.')
             CommentAgent(db=db, config=config).run({
@@ -146,6 +168,9 @@ class Orchestrator:
             self._record_metric(workflow_id, story_id, 'eligibility_accuracy', 0.0, 'Intake validation failed')
             return {"success": False, "stage": "intake", "error": intake_result.error, "results": results}
 
+        log_event(story_id=story_id or 0, workflow_id=workflow_id,
+                  agent='Intake', level='success',
+                  message='✅ Intake Validation passed — all required fields present')
         self._record_metric(workflow_id, story_id, 'eligibility_accuracy', 1.0, 'Intake validation passed')
 
         # ═══════════════════════════════════════════════════════════
@@ -189,6 +214,10 @@ class Orchestrator:
 
         step_dev_start = self._make_step(workflow_id, 'Comment', 'Post development started comment to Jira and transition to In Progress.')
         try:
+            log_event(story_id=story_id or 0, workflow_id=workflow_id,
+                      agent='Comment', level='jira',
+                      message=f'💬 Jira comment posted: Development started on branch `{target_branch}`',
+                      detail=f'Jira key: {jira_key}, new status: {in_progress_status}')
             CommentAgent(db=db, config=config).run({
                 'story': context_story,
                 'comment_type': 'ready_for_dev',
@@ -201,14 +230,23 @@ class Orchestrator:
                     'acceptance_criteria': ac_text
                 }
             }, workflow_id=workflow_id, step_record=step_dev_start)
+            log_event(story_id=story_id or 0, workflow_id=workflow_id,
+                      agent='Comment', level='jira',
+                      message=f'✅ Jira ticket {jira_key} moved → {in_progress_status}')
             logger.info(f"[Orchestrator] Jira {jira_key} comment posted and moved → {in_progress_status}")
         except Exception as e:
+            log_event(story_id=story_id or 0, workflow_id=workflow_id,
+                      agent='Comment', level='warning',
+                      message=f'⚠️ Jira comment failed (non-fatal): {e}')
             logger.warning(f"[Orchestrator] Jira development started comment failed (non-fatal): {e}")
 
         # ═══════════════════════════════════════════════════════════
         # STEP 2 — REPOSITORY ANALYSIS
         # CHANGE C (part 1): qa_feedback injected into RepoAnalysis context
         # ═══════════════════════════════════════════════════════════
+        log_event(story_id=story_id or 0, workflow_id=workflow_id,
+                  agent='RepoAnalysis', level='info',
+                  message='🔍 Repository Analysis started — cloning & analyzing codebase')
         self._update_workflow_status(workflow, 'Running', 'RepoAnalysis')
         step2 = self._make_step(workflow_id, 'RepoAnalysis', 'Analyze repositories and build implementation map.')
         repo_result = RepoAnalysisAgent(db=db, config=config).run(
@@ -221,9 +259,17 @@ class Orchestrator:
         results['repo_analysis'] = repo_result.output
 
         if not repo_result.success:
+            log_event(story_id=story_id or 0, workflow_id=workflow_id,
+                      agent='RepoAnalysis', level='error',
+                      message=f'❌ Repository Analysis FAILED: {repo_result.error}')
             self._update_workflow_status(workflow, 'Failed', 'RepoAnalysis')
             return {"success": False, "stage": "repo_analysis", "error": repo_result.error, "results": results}
 
+        files_count = len(repo_result.output.get('files', [])) if isinstance(repo_result.output, dict) else '?'
+        log_event(story_id=story_id or 0, workflow_id=workflow_id,
+                  agent='RepoAnalysis', level='success',
+                  message=f'✅ Repository Analysis complete — implementation map built',
+                  detail=f'{files_count} relevant files identified')
         implementation_map = repo_result.output
 
         # ═══════════════════════════════════════════════════════════
@@ -242,6 +288,9 @@ class Orchestrator:
             db.session.commit()
 
             # Developer — qa_feedback already injected from previous runs or rework
+            log_event(story_id=story_id or 0, workflow_id=workflow_id,
+                      agent='Developer', level='info',
+                      message=f'⚙️ Developer Agent started (iteration {loop_count}/{self.max_loops}) — writing code')
             step_dev = self._make_step(workflow_id, 'Developer',
                                         f'Generate implementation (iteration {loop_count}).', loop_count)
             dev_result = DeveloperAgent(db=db, config=config).run({
@@ -252,13 +301,23 @@ class Orchestrator:
             }, workflow_id=workflow_id, step_record=step_dev)
 
             if not dev_result.success:
+                log_event(story_id=story_id or 0, workflow_id=workflow_id,
+                          agent='Developer', level='error',
+                          message=f'❌ Developer Agent FAILED (iteration {loop_count}): {dev_result.error}')
                 self._update_workflow_status(workflow, 'Failed', 'Developer')
                 return {"success": False, "stage": "developer", "error": dev_result.error, "results": results}
 
             developer_output = dev_result.output
             results[f'developer_loop_{loop_count}'] = developer_output
+            changes_count = len(developer_output.get('changes', [])) if isinstance(developer_output, dict) else 0
+            log_event(story_id=story_id or 0, workflow_id=workflow_id,
+                      agent='Developer', level='success',
+                      message=f'✅ Developer Agent done — {changes_count} file(s) modified')
 
             # Validator — qa_feedback injected so it verifies rejected criteria too
+            log_event(story_id=story_id or 0, workflow_id=workflow_id,
+                      agent='Validator', level='info',
+                      message=f'🔬 Validator Agent started (iteration {loop_count}) — checking acceptance criteria')
             self._update_workflow_status(workflow, 'Running', 'Validator')
             step_val = self._make_step(workflow_id, 'Validator',
                                         f'Validate implementation (iteration {loop_count}).', loop_count)
@@ -274,6 +333,9 @@ class Orchestrator:
 
             if val_result.success:
                 validation_passed = True
+                log_event(story_id=story_id or 0, workflow_id=workflow_id,
+                          agent='Validator', level='success',
+                          message=f'✅ Validator passed on iteration {loop_count} — all acceptance criteria met')
                 self._record_metric(workflow_id, story_id, 'acceptance_criteria_coverage', 1.0,
                                      f'Passed on iteration {loop_count}')
                 self._record_metric(workflow_id, story_id, 'loop_iterations', float(loop_count))
@@ -281,6 +343,10 @@ class Orchestrator:
             else:
                 # Update feedback for next dev iteration (validator feedback takes priority)
                 validator_qa_feedback = val_result.output.get('feedback_for_developer', '') or validator_qa_feedback
+                log_event(story_id=story_id or 0, workflow_id=workflow_id,
+                          agent='Validator', level='warning',
+                          message=f'⚠️ Validator rejected iteration {loop_count} — retrying with feedback',
+                          detail=str(validator_qa_feedback)[:300])
                 logger.info(f"[Orchestrator] Validator rejected (loop {loop_count}). Feedback: {validator_qa_feedback[:100]}")
 
         if not validation_passed:
@@ -306,6 +372,9 @@ class Orchestrator:
         # ═══════════════════════════════════════════════════════════
         # STEP 5 — BRANCH & PR
         # ═══════════════════════════════════════════════════════════
+        log_event(story_id=story_id or 0, workflow_id=workflow_id,
+                  agent='BranchPR', level='info',
+                  message=f'🌿 BranchPR Agent started — creating branch `{target_branch}` and raising PR')
         self._update_workflow_status(workflow, 'Running', 'BranchPR')
         step5 = self._make_step(workflow_id, 'BranchPR', 'Create feature branch and pull request.')
         pr_result = BranchPRAgent(db=db, config=config).run({
@@ -319,6 +388,9 @@ class Orchestrator:
         results['branch_pr'] = pr_result.output
 
         if not pr_result.success:
+            log_event(story_id=story_id or 0, workflow_id=workflow_id,
+                      agent='BranchPR', level='error',
+                      message=f'❌ BranchPR Agent FAILED: {pr_result.error}')
             self._update_workflow_status(workflow, 'Failed', 'BranchPR')
             return {"success": False, "stage": "branch_pr", "error": pr_result.error, "results": results}
 
@@ -358,21 +430,37 @@ class Orchestrator:
             except Exception as fe:
                 logger.warning(f"[Orchestrator] Failed to write local evidence file: {fe}")
 
+            log_event(story_id=story_id or 0, workflow_id=workflow_id,
+                      agent='BranchPR', level='success',
+                      message=f'✅ PR raised: {pr_out.get("pr_url", "(url pending)")}',
+                      detail=f'Branch: {pr_out.get("branch_name")}')
             # Attach evidence.md to Jira issue
             if jira_key and evidence_bytes:
                 try:
                     from app.services.jira_service import JiraService
                     JiraService.add_attachment(jira_key, evidence_filename, evidence_bytes, 'text/markdown')
+                    log_event(story_id=story_id or 0, workflow_id=workflow_id,
+                              agent='Comment', level='jira',
+                              message=f'📎 Evidence report `{evidence_filename}` attached to Jira {jira_key}')
                     logger.info(f"[Orchestrator] Evidence attached to Jira {jira_key}: {evidence_filename}")
                 except Exception as e:
+                    log_event(story_id=story_id or 0, workflow_id=workflow_id,
+                              agent='Comment', level='warning',
+                              message=f'⚠️ Jira attachment failed (non-fatal): {e}')
                     logger.warning(f"[Orchestrator] Jira attachment failed (non-fatal): {e}")
 
         except Exception as e:
+            log_event(story_id=story_id or 0, workflow_id=workflow_id,
+                      agent='Orchestrator', level='warning',
+                      message=f'⚠️ Evidence generation failed (non-fatal): {e}')
             logger.warning(f"[Orchestrator] Evidence generation failed (non-fatal): {e}")
 
         # ═══════════════════════════════════════════════════════════
         # STEP 6 — COMMENT (task done, PR raised → QA-TESTING)
         # ═══════════════════════════════════════════════════════════
+        log_event(story_id=story_id or 0, workflow_id=workflow_id,
+                  agent='Comment', level='jira',
+                  message='💬 Jira comment posted: Task done & PR raised — moving to QA-TESTING')
         self._update_workflow_status(workflow, 'Running', 'Comment')
         step6 = self._make_step(workflow_id, 'Comment', 'Post task-done comment, move to QA-TESTING.')
         CommentAgent(db=db, config=config).run({
@@ -390,6 +478,10 @@ class Orchestrator:
 
         # ── Final workflow state ──────────────────────────────────
         self._update_workflow_status(workflow, 'Awaiting QA', 'Comment')
+        log_event(story_id=story_id or 0, workflow_id=workflow_id,
+                  agent='Orchestrator', level='success',
+                  message='🎉 Pipeline COMPLETE — Awaiting QA review',
+                  detail=f'PR: {pr_out.get("pr_url")} | Loops: {loop_count}')
 
         logger.info(f"[Orchestrator] Workflow {workflow_id} complete. PR: {pr_out.get('pr_url')}. Awaiting QA.")
         return {
