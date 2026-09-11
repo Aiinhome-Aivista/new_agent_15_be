@@ -160,6 +160,14 @@ def submit_qa_decision(story_id):
         if workflow:
             workflow.status = 'Completed'
         new_status = 'DONE'
+
+        # Clean up mutable workflow overlay (immutable Base Index remains intact)
+        try:
+            from app.services.rag_service import RagService
+            RagService.get_instance().purge_workflow_overlay(workflow_id=pr.workflow_id, story_id=story_id)
+            logger.info(f"[QA] Successfully purged overlay collection for workflow {pr.workflow_id}, story {story_id}")
+        except Exception as purge_err:
+            logger.warning(f"[QA] Could not purge workflow overlay: {purge_err}")
     else:
         pr.pr_status = 'rejected'
         story.status = 'TO-DO'

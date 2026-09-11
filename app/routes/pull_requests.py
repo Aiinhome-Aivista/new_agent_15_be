@@ -112,6 +112,14 @@ def approve_pr(pr_id):
         workflow.status = 'Completed'
         db.session.commit()
 
+    # Clean up mutable workflow overlay (immutable Base Index remains intact)
+    try:
+        from app.services.rag_service import RagService
+        RagService.get_instance().purge_workflow_overlay(workflow_id=pr.workflow_id, story_id=pr.story_id or 0)
+        logger.info(f"[PR] Purged workflow overlay for workflow {pr.workflow_id}")
+    except Exception as purge_err:
+        logger.warning(f"[PR] Could not purge workflow overlay: {purge_err}")
+
     # Audit log
     _audit(pr.workflow_id, pr.story_id, request.current_user.id, 'pr_approved',
            {'pr_id': pr_id, 'pr_url': pr.pr_url})

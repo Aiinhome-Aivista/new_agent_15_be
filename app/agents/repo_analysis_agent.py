@@ -100,9 +100,19 @@ class RepoAnalysisAgent(BaseAgent):
                     repo_name = parts[1]
 
             from flask import current_app
-            repos_root = os.path.abspath(os.path.join(current_app.root_path, '..', 'repos'))
-            os.makedirs(repos_root, exist_ok=True)
-            repo_dir = os.path.join(repos_root, repo_name)
+            from app.config.settings import Config
+            from app.services.rag_service import RagService
+
+            workflow_id = context.get('workflow_id', 0)
+            story_id = story.id if hasattr(story, 'id') else (story.get('id', 0) if isinstance(story, dict) else 0)
+
+            # Isolated Git workspace per workflow
+            workspace_dir = context.get('workspace_dir')
+            if not workspace_dir:
+                workspaces_root = getattr(Config, 'WORKSPACES_DIR', os.path.abspath(os.path.join(current_app.root_path, '..', 'workspaces')))
+                workspace_dir = os.path.join(workspaces_root, f"wf_{workflow_id}_{story_id}")
+            os.makedirs(workspace_dir, exist_ok=True)
+            repo_dir = os.path.join(workspace_dir, repo_name)
 
             try:
                 github_token = self.config.get('GITHUB_TOKEN')
@@ -113,13 +123,13 @@ class RepoAnalysisAgent(BaseAgent):
                 target_branch = source_branch or repo.get('branch') or self.config.get('GITHUB_DEFAULT_BASE_BRANCH', 'main')
 
                 if os.path.exists(os.path.join(repo_dir, '.git')):
-                    self.logger.info(f"Using existing project repository at '{repo_dir}'")
+                    self.logger.info(f"Using existing isolated repository at '{repo_dir}'")
                     subprocess.run(['git', 'remote', 'set-url', 'origin', clone_url], cwd=repo_dir, check=True)
                     subprocess.run(['git', 'fetch', 'origin'], cwd=repo_dir, check=True)
                     subprocess.run(['git', 'checkout', target_branch], cwd=repo_dir, capture_output=True)
                     subprocess.run(['git', 'pull', 'origin', target_branch], cwd=repo_dir, capture_output=True)
                 else:
-                    self.logger.info(f"Cloning repository into project folder '{repo_dir}'...")
+                    self.logger.info(f"Cloning repository into isolated workspace '{repo_dir}'...")
                     if os.path.exists(repo_dir):
                         import shutil
                         shutil.rmtree(repo_dir, ignore_errors=True)
@@ -134,33 +144,51 @@ class RepoAnalysisAgent(BaseAgent):
                         self.logger.warning(f"Branch '{target_branch}' not found on remote, falling back to default clone.")
                         subprocess.check_call(['git', 'clone', '--depth', '50', clone_url, repo_dir])
 
-                # Read all repository source files directly from project folder
+                # ── VECTOR DB: Ensure Immutable Base Index ──────────
+                rag_service = RagService.get_instance()
+                git_meta = rag_service.get_repo_metadata(repo_dir)
+                commit_sha = git_meta.get("full_commit_sha", "")
+
+                base_col = rag_service.ensure_base_index(
+                    repo_url=repo_url,
+                    branch=target_branch,
+                    commit_sha=commit_sha,
+                    repo_dir=repo_dir
+                )
+                overlay_col = rag_service.get_workflow_overlay(workflow_id=workflow_id, story_id=story_id)
+
+                # ── RAG Query #1: Retrieve Architectural Context ────
+                query_text = f"Architecture, key modules, endpoints, and models for: {title}\n{description}\n{acceptance_criteria}"
+                qa_feedback = context.get('qa_feedback')
+                if qa_feedback:
+                    query_text += f"\nPrevious QA Rejection: {qa_feedback}"
+
+                snippets = rag_service.query_hybrid_rag(base_col, overlay_col, query_text, n_results=8)
+                for s in snippets:
+                    repo_texts.append(f"File: {s['file_path']} (Lines {s['start_line']}-{s['end_line']}) [{s['source']}]\n{s['code']}")
+
+                # Also populate in-memory map of read files
                 for root, _, files in os.walk(repo_dir):
                     if '.git' in root or 'node_modules' in root or 'venv' in root:
                         continue
                     for file in files:
-                        if file.endswith(('.py', '.js', '.jsx', '.ts', '.tsx', '.md', '.html', '.css', '.json', '.txt')):
+                        if file.endswith(('.py', '.js', '.jsx', '.ts', '.tsx', '.json')):
                             file_path = os.path.join(root, file)
                             try:
                                 with open(file_path, 'r', encoding='utf-8') as f:
-                                    content = f.read()
                                     rel_path = os.path.relpath(file_path, repo_dir).replace('\\', '/')
-                                    repo_files_map[rel_path] = content
-                                    repo_texts.append(f"File: {rel_path}\n{content}")
+                                    repo_files_map[rel_path] = f.read()
                             except Exception:
                                 pass
+
             except Exception as e:
-                self.logger.error(f"Failed to clone/read repo {repo_url} into {repo_dir}: {e}")
+                self.logger.error(f"Failed to clone/index repo {repo_url} into {repo_dir}: {e}")
 
         rag_context = ""
         if repo_texts:
-            # Ingest repository files directly into context
-            rag_context = "\n\n".join(repo_texts[:15])
+            rag_context = "\n\n".join(repo_texts[:12])
         else:
-            rag_context = "No relevant repository context could be loaded (check ALLOWED_REPO_PREFIXES or token)."
-
-        if not rag_context or rag_context == "RAG processing failed.":
-            rag_context = "\n\n".join(repo_texts[:8])
+            rag_context = "No relevant repository context could be loaded."
 
         qa_feedback = context.get('qa_feedback')
         rework_section = ""
@@ -205,7 +233,12 @@ analysis on files, dependencies, and architectural patterns relevant to resolvin
                     "patterns_found": parsed.get('patterns_found', []),
                     "implementation_notes": parsed.get('implementation_notes', ''),
                     "estimated_complexity": parsed.get('estimated_complexity', 'medium'),
-                    "repo_files": repo_files_map
+                    "repo_files": repo_files_map,
+                    "workspace_dir": workspace_dir,
+                    "repo_dir": repo_dir,
+                    "commit_sha": commit_sha if 'commit_sha' in locals() else '',
+                    "base_collection": base_col.name if 'base_col' in locals() and base_col else '',
+                    "overlay_collection": overlay_col.name if 'overlay_col' in locals() and overlay_col else '',
                 }
             )
 
@@ -222,6 +255,11 @@ analysis on files, dependencies, and architectural patterns relevant to resolvin
                     "patterns_found": ["Flask Blueprint route validation", "Standard HTTP error responses"],
                     "implementation_notes": "Validate email presence and format before creating user. Return 400 Bad Request on invalid format.",
                     "estimated_complexity": "low",
-                    "repo_files": repo_files_map
+                    "repo_files": repo_files_map,
+                    "workspace_dir": workspace_dir if 'workspace_dir' in locals() else '',
+                    "repo_dir": repo_dir if 'repo_dir' in locals() else '',
+                    "commit_sha": commit_sha if 'commit_sha' in locals() else '',
+                    "base_collection": base_col.name if 'base_col' in locals() and base_col else '',
+                    "overlay_collection": overlay_col.name if 'overlay_col' in locals() and overlay_col else '',
                 }
             )

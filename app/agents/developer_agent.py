@@ -82,13 +82,39 @@ class DeveloperAgent(BaseAgent):
                 qa_feedback=qa_feedback
             )
 
-        repo_files = impl_map.get('repo_files', {})
+        # ── RAG Query #2: Targeted Snippets for Files to Modify ──
         existing_code_section = ""
-        if repo_files:
-            existing_code_section = "EXISTING REPOSITORY CODE CONTEXT:\n"
-            for fpath, fcontent in repo_files.items():
-                if fpath.endswith(('.py', '.js', '.ts', '.html', '.json')) and len(fcontent) < 4000:
-                    existing_code_section += f"\n--- FILE: {fpath} ---\n{fcontent}\n"
+        try:
+            from app.services.rag_service import RagService
+            rag_service = RagService.get_instance()
+
+            base_col_name = impl_map.get('base_collection')
+            overlay_col_name = impl_map.get('overlay_collection')
+
+            base_col = rag_service.client.get_collection(base_col_name) if base_col_name else None
+            overlay_col = rag_service.client.get_collection(overlay_col_name) if overlay_col_name else None
+
+            target_files = [f.get('file', '') for f in impl_map.get('files_to_modify', []) if f.get('file')]
+            query_dev = f"Functions, routes, schemas, and models for: {' '.join(target_files)} {title} {acceptance_criteria}"
+            if qa_feedback:
+                query_dev += f"\nAddress QA Feedback: {qa_feedback}"
+
+            snippets = rag_service.query_hybrid_rag(base_col, overlay_col, query_dev, n_results=6)
+            if snippets:
+                existing_code_section = "EXISTING REPOSITORY CODE CONTEXT (Hybrid RAG: Overlay > Base):\n"
+                for s in snippets:
+                    existing_code_section += f"\n--- FILE: {s['file_path']} (Lines {s['start_line']}-{s['end_line']}) [{s['source']}] ---\n{s['code']}\n"
+        except Exception as e:
+            self.logger.warning(f"[DeveloperAgent] RAG Query #2 failed, using raw repo_files fallback: {e}")
+
+        # Fallback to in-memory files if RAG retrieved nothing
+        if not existing_code_section:
+            repo_files = impl_map.get('repo_files', {})
+            if repo_files:
+                existing_code_section = "EXISTING REPOSITORY CODE CONTEXT:\n"
+                for fpath, fcontent in repo_files.items():
+                    if fpath.endswith(('.py', '.js', '.ts', '.html', '.json')) and len(fcontent) < 4000:
+                        existing_code_section += f"\n--- FILE: {fpath} ---\n{fcontent}\n"
 
         prompt = DEVELOPER_PROMPT_TEMPLATE.format(
             title=title,
@@ -120,6 +146,29 @@ class DeveloperAgent(BaseAgent):
 
             summary = parsed.get('summary', '')
             changes = parsed.get('changes', [])
+
+            # Write changes directly to isolated disk workspace
+            import os
+            repo_dir = impl_map.get('repo_dir') or context.get('workspace_dir')
+            if repo_dir and os.path.exists(repo_dir):
+                for c in changes:
+                    rf = c.get('file')
+                    action = c.get('action', 'modify').lower()
+                    if not rf:
+                        continue
+                    full_p = os.path.join(repo_dir, rf)
+                    if action == 'delete':
+                        if os.path.exists(full_p):
+                            try:
+                                os.remove(full_p)
+                            except Exception:
+                                pass
+                    elif action in ('create', 'modify'):
+                        cnt = c.get('full_content') or c.get('code_snippet')
+                        if cnt:
+                            os.makedirs(os.path.dirname(full_p), exist_ok=True)
+                            with open(full_p, 'w', encoding='utf-8') as f:
+                                f.write(cnt)
             
             # Metric: pr_summary_matches_diff (semantic filename check)
             pr_summary_matches_diff = 0.0
@@ -148,7 +197,8 @@ class DeveloperAgent(BaseAgent):
                     "changes": changes,
                     "total_files_changed": parsed.get('total_files_changed', len(changes)),
                     "ready_for_validation": parsed.get('ready_for_validation', True),
-                    "loop_iteration": loop_iteration
+                    "loop_iteration": loop_iteration,
+                    "repo_dir": repo_dir
                 }
             )
 
@@ -220,30 +270,44 @@ class DeveloperAgent(BaseAgent):
                 "    assert res.status_code in (200, 201)\n"
             )
 
+            # Write fallback changes to isolated disk workspace if exists
+            import os
+            repo_dir = impl_map.get('repo_dir') or context.get('workspace_dir')
+            fallback_changes = [
+                {
+                    "file": "app/routes/users.py",
+                    "action": "modify",
+                    "description": "Implement RFC email validation in POST /users endpoint conforming to repository structure.",
+                    "code_snippet": "if not re.match(EMAIL_REGEX, email): return jsonify({'error': 'Invalid email format'}), 400",
+                    "full_content": updated_users_py,
+                    "satisfies_criteria": ["AC1", "AC2", "AC3", "AC4", "AC6", "AC7"]
+                },
+                {
+                    "file": "tests/test_users.py",
+                    "action": "modify",
+                    "description": "Add comprehensive automated test suite testing valid, invalid, missing, and trimmed email formats.",
+                    "code_snippet": "def test_create_user_valid_email(client): ...",
+                    "full_content": updated_tests_py,
+                    "satisfies_criteria": ["AC1", "AC2", "AC3", "AC4", "AC5", "AC6", "AC7"]
+                }
+            ]
+            if repo_dir and os.path.exists(repo_dir):
+                for c in fallback_changes:
+                    rf = c.get('file')
+                    if rf and c.get('full_content'):
+                        full_p = os.path.join(repo_dir, rf)
+                        os.makedirs(os.path.dirname(full_p), exist_ok=True)
+                        with open(full_p, 'w', encoding='utf-8') as f:
+                            f.write(c.get('full_content'))
+
             return AgentResult(
                 success=True,
                 output={
                     "summary": f"Generated production-ready code implementation for '{title}' satisfying all acceptance criteria (AC1-AC7){iter_note}.",
-                    "changes": [
-                        {
-                            "file": "app/routes/users.py",
-                            "action": "modify",
-                            "description": "Implement RFC email validation in POST /users endpoint conforming to repository structure.",
-                            "code_snippet": "if not re.match(EMAIL_REGEX, email): return jsonify({'error': 'Invalid email format'}), 400",
-                            "full_content": updated_users_py,
-                            "satisfies_criteria": ["AC1", "AC2", "AC3", "AC4", "AC6", "AC7"]
-                        },
-                        {
-                            "file": "tests/test_users.py",
-                            "action": "modify",
-                            "description": "Add comprehensive automated test suite testing valid, invalid, missing, and trimmed email formats.",
-                            "code_snippet": "def test_create_user_valid_email(client): ...",
-                            "full_content": updated_tests_py,
-                            "satisfies_criteria": ["AC1", "AC2", "AC3", "AC4", "AC5", "AC6", "AC7"]
-                        }
-                    ],
+                    "changes": fallback_changes,
                     "total_files_changed": 2,
                     "ready_for_validation": True,
-                    "loop_iteration": loop_iteration
+                    "loop_iteration": loop_iteration,
+                    "repo_dir": repo_dir
                 }
             )

@@ -6,12 +6,15 @@ Runs all 8 agents in sequence:
 Persists a WorkflowStep for each agent execution.
 Enforces loop limit via AGENT_MAX_LOOP_ITERATIONS.
 """
+import os
 import logging
 from flask import current_app
 from app import db
 from app.models.workflow import Workflow, WorkflowStep
 from app.models.story import Story
 from app.models.devaa_models import SuccessMetric
+from app.config.settings import Config
+from app.services.rag_service import RagService
 
 from app.agents.intake_validation_agent import IntakeValidationAgent
 from app.agents.repo_analysis_agent import RepoAnalysisAgent
@@ -241,6 +244,17 @@ class Orchestrator:
             logger.warning(f"[Orchestrator] Jira development started comment failed (non-fatal): {e}")
 
         # ═══════════════════════════════════════════════════════════
+        # WORKSPACE ALLOCATION ⭐
+        # Isolated Git workspace per workflow run
+        # ═══════════════════════════════════════════════════════════
+        workspaces_root = getattr(Config, 'WORKSPACES_DIR', os.path.abspath(os.path.join(current_app.root_path, '..', 'workspaces')))
+        workspace_dir = os.path.join(workspaces_root, f"wf_{workflow_id}_{story_id or 0}")
+        os.makedirs(workspace_dir, exist_ok=True)
+        log_event(story_id=story_id or 0, workflow_id=workflow_id,
+                  agent='RepoAnalysis', level='info',
+                  message=f'📁 Isolated workspace allocated: `wf_{workflow_id}_{story_id or 0}`')
+
+        # ═══════════════════════════════════════════════════════════
         # STEP 2 — REPOSITORY ANALYSIS
         # CHANGE C (part 1): qa_feedback injected into RepoAnalysis context
         # ═══════════════════════════════════════════════════════════
@@ -253,6 +267,8 @@ class Orchestrator:
             {
                 'story': context_story,
                 'qa_feedback': qa_feedback,        # ← NEW: rework context for RAG re-focus
+                'workflow_id': workflow_id,
+                'workspace_dir': workspace_dir,
             },
             workflow_id=workflow_id, step_record=step2
         )
@@ -297,7 +313,9 @@ class Orchestrator:
                 'story': context_story,
                 'implementation_map': implementation_map,
                 'qa_feedback': validator_qa_feedback,   # human QA or validator feedback
-                'loop_iteration': loop_count
+                'loop_iteration': loop_count,
+                'workflow_id': workflow_id,
+                'workspace_dir': workspace_dir,
             }, workflow_id=workflow_id, step_record=step_dev)
 
             if not dev_result.success:
@@ -314,6 +332,28 @@ class Orchestrator:
                       agent='Developer', level='success',
                       message=f'✅ Developer Agent done — {changes_count} file(s) modified')
 
+            # ── CHANGED FILES RE-INDEX ⭐ ──────────────────────────────
+            try:
+                rag_svc = RagService.get_instance()
+                overlay_col = rag_svc.get_workflow_overlay(workflow_id=workflow_id, story_id=story_id or 0)
+                active_repo_dir = (
+                    developer_output.get('repo_dir')
+                    or implementation_map.get('repo_dir')
+                    or workspace_dir
+                )
+                changes = developer_output.get('changes', [])
+                if overlay_col and active_repo_dir and changes:
+                    reindex_res = rag_svc.record_workflow_changes(overlay_col, active_repo_dir, changes)
+                    log_event(
+                        story_id=story_id or 0, workflow_id=workflow_id,
+                        agent='Developer', level='info',
+                        message=f'⚡ Changed Files Re-indexed into Overlay ({reindex_res["upserted_chunks"]} chunks, {reindex_res["tombstones_recorded"]} tombstones)',
+                        detail=f'Collection: {overlay_col.name}'
+                    )
+                    logger.info(f"[Orchestrator] Changed files re-indexed into {overlay_col.name}: {reindex_res}")
+            except Exception as rag_err:
+                logger.warning(f"[Orchestrator] Failed to re-index changed files into workflow overlay: {rag_err}")
+
             # Validator — qa_feedback injected so it verifies rejected criteria too
             log_event(story_id=story_id or 0, workflow_id=workflow_id,
                       agent='Validator', level='info',
@@ -327,6 +367,8 @@ class Orchestrator:
                 'developer_output': developer_output,
                 'loop_iteration': loop_count,
                 'qa_feedback': validator_qa_feedback,   # ← NEW: rework QA context
+                'workflow_id': workflow_id,
+                'workspace_dir': workspace_dir,
             }, workflow_id=workflow_id, step_record=step_val)
 
             results[f'validator_loop_{loop_count}'] = val_result.output
@@ -382,7 +424,9 @@ class Orchestrator:
             'workflow_id': workflow_id,
             'developer_output': developer_output,
             'target_branch': target_branch,
-            'triggered_by_user_id': triggered_by_user_id
+            'triggered_by_user_id': triggered_by_user_id,
+            'workspace_dir': workspace_dir,
+            'repo_dir': implementation_map.get('repo_dir'),
         }, workflow_id=workflow_id, step_record=step5)
 
         results['branch_pr'] = pr_result.output

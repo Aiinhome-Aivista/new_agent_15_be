@@ -71,11 +71,43 @@ You MUST specifically confirm whether these previously-rejected issues have been
 {qa_feedback}
 """
 
+        # Ground truth: Inspect actual disk files if workspace_repo_dir exists
+        impl_map = context.get('implementation_map', {})
+        repo_dir = impl_map.get('repo_dir') or context.get('workspace_dir')
+        disk_verified_count = 0
+        if repo_dir and os.path.exists(repo_dir):
+            import os
+            for c in changes:
+                rf = c.get('file')
+                if rf and os.path.exists(os.path.join(repo_dir, rf)):
+                    disk_verified_count += 1
+
+        # ── RAG Query #3: Contract & Architecture Verification ──
+        rag_verification_context = ""
+        try:
+            from app.services.rag_service import RagService
+            rag_service = RagService.get_instance()
+            base_col_name = impl_map.get('base_collection')
+            overlay_col_name = impl_map.get('overlay_collection')
+
+            base_col = rag_service.client.get_collection(base_col_name) if base_col_name else None
+            overlay_col = rag_service.client.get_collection(overlay_col_name) if overlay_col_name else None
+
+            query_val = f"Verification of criteria: {acceptance_criteria} with changes to {' '.join([c.get('file','') for c in changes])}"
+            snippets = rag_service.query_hybrid_rag(base_col, overlay_col, query_val, n_results=5)
+            if snippets:
+                rag_verification_context = "\n\nCODEBASE CONTEXT (Hybrid RAG: Overlay > Base):\n" + "\n".join([
+                    f"--- File: {s['file_path']} [{s['source']}] ---\n{s['code'][:400]}"
+                    for s in snippets
+                ])
+        except Exception as e:
+            self.logger.warning(f"[ValidatorAgent] RAG Query #3 failed: {e}")
+
         prompt = VALIDATOR_PROMPT_TEMPLATE.format(
             acceptance_criteria=acceptance_criteria,
             dev_summary=developer_output.get('summary', 'No summary provided'),
             changes_list=changes_list
-        ) + rework_section
+        ) + rework_section + rag_verification_context
 
         try:
             llm_response = LLMService.generate_response(

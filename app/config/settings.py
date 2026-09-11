@@ -95,3 +95,13 @@ class Config:
     ALLOWED_ORIGINS = [
         o.strip() for o in os.getenv("ALLOWED_ORIGINS", "http://localhost:5173").split(",")
     ]
+
+    # ── RAG & Vector Store ──────────────────────────────────────
+    CHROMA_PERSIST_DIR = os.getenv("CHROMA_PERSIST_DIR", os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "chroma_db")))
+    WORKSPACES_DIR = os.getenv("WORKSPACES_DIR", os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "workspaces")))
+    RAG_CHUNK_SIZE = int(os.getenv("RAG_CHUNK_SIZE", 800))
+    RAG_CHUNK_OVERLAP = int(os.getenv("RAG_CHUNK_OVERLAP", 120))
+    RAG_TOP_K = int(os.getenv("RAG_TOP_K", 6))
+    EMBEDDING_MODEL_NAME = os.getenv("EMBEDDING_MODEL_NAME", "all-MiniLM-L6-v2")
+    EMBEDDING_MODEL_VERSION = os.getenv("EMBEDDING_MODEL_VERSION", "v1.0")
+
