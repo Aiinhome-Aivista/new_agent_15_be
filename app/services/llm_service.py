@@ -9,8 +9,15 @@ Multi-key Gemini support:
 """
 import itertools
 import logging
+import warnings
 import requests
-import google.generativeai as genai
+
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore", category=FutureWarning)
+    warnings.filterwarnings("ignore", category=FutureWarning, message=r"(?s).*google\.generativeai.*")
+    import google.generativeai as genai
+
+warnings.filterwarnings("ignore", category=FutureWarning, message=r"(?s).*google\.generativeai.*")
 from flask import current_app
 
 logger = logging.getLogger(__name__)
