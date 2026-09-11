@@ -164,11 +164,20 @@ class Orchestrator:
             base_branch = repo_details[0].get('branch') or base_branch
 
         if not target_branch:
-            desc_text = getattr(story, 'description', '') if story else (context_story.get('description', '') if isinstance(context_story, dict) else '')
+            texts_to_check = [
+                getattr(story, 'description', '') if story else '',
+                getattr(story, 'title', '') if story else '',
+                context_story.get('description', '') if isinstance(context_story, dict) else '',
+                context_story.get('title', '') if isinstance(context_story, dict) else '',
+                context_story.get('requirements_doc', '') if isinstance(context_story, dict) else ''
+            ]
             import re
-            tb_m = re.search(r'target_branch\s*[:=]\s*([^\s\n\r]+)', desc_text or '', re.IGNORECASE)
-            if tb_m:
-                target_branch = tb_m.group(1).strip()
+            for t in texts_to_check:
+                if t:
+                    tb_m = re.search(r'target_branch\s*[:=]\s*([^\s\n\r,;|]+)', t, re.IGNORECASE)
+                    if tb_m:
+                        target_branch = tb_m.group(1).strip()
+                        break
         if not target_branch:
             target_branch = f"devaa/{jira_key or story_id}"
 
@@ -295,6 +304,7 @@ class Orchestrator:
             'story': context_story,
             'workflow_id': workflow_id,
             'developer_output': developer_output,
+            'target_branch': target_branch,
             'triggered_by_user_id': triggered_by_user_id
         }, workflow_id=workflow_id, step_record=step5)
 

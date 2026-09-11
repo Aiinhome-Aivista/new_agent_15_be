@@ -48,6 +48,21 @@ class RepoAnalysisAgent(BaseAgent):
         acceptance_criteria = story.acceptance_criteria if hasattr(story, 'acceptance_criteria') else story.get('acceptance_criteria', '')
         source_branch = story.source_branch if hasattr(story, 'source_branch') else story.get('source_branch', '')
         repo_details = story.repository_details if hasattr(story, 'repository_details') else story.get('repository_details', [])
+        if isinstance(repo_details, str):
+            import json
+            try:
+                repo_details = json.loads(repo_details)
+            except Exception:
+                repo_details = []
+
+        if not repo_details:
+            github_base_url = self.config.get('GITHUB_BASE_URL', '')
+            if github_base_url:
+                repo_details = [{
+                    'url': github_base_url,
+                    'branch': self.config.get('GITHUB_DEFAULT_BASE_BRANCH', 'main'),
+                    'name': 'primary-repo'
+                }]
 
         # ── RAG LOGIC ──────────────────────────────────────────────
         raw_prefixes = self.config.get('ALLOWED_REPO_PREFIXES', [])
@@ -59,6 +74,7 @@ class RepoAnalysisAgent(BaseAgent):
             allowed_prefixes = []
 
         repo_texts = []
+        repo_files_map = {}
         import tempfile, subprocess, os
         
         for repo in repo_details:
@@ -76,13 +92,13 @@ class RepoAnalysisAgent(BaseAgent):
                 self.logger.warning(f"Repo {repo_url} not in ALLOWED_REPO_PREFIXES.")
                 continue
 
-            # Clone
-            with tempfile.TemporaryDirectory() as temp_dir:
+            # Clone and inspect real repository files
+            with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as temp_dir:
                 try:
                     github_token = self.config.get('GITHUB_TOKEN')
                     clone_url = repo_url
                     if github_token and "github.com" in repo_url:
-                        clone_url = repo_url.replace("https://github.com/", f"https://oauth2:{github_token}@github.com/")
+                        clone_url = repo_url.replace("https://github.com/", f"https://x-access-token:{github_token}@github.com/")
 
                     target_branch = source_branch or repo.get('branch') or self.config.get('GITHUB_DEFAULT_BASE_BRANCH', 'main')
                     clone_cmd = ['git', 'clone', '--depth', '1']
@@ -96,17 +112,18 @@ class RepoAnalysisAgent(BaseAgent):
                         self.logger.warning(f"Branch '{target_branch}' not found on remote, falling back to default clone.")
                         subprocess.check_call(['git', 'clone', '--depth', '1', clone_url, temp_dir])
                     
-                    # Read files
+                    # Read all repository source files
                     for root, _, files in os.walk(temp_dir):
                         if '.git' in root or 'node_modules' in root or 'venv' in root:
                             continue
                         for file in files:
-                            if file.endswith(('.py', '.js', '.jsx', '.ts', '.tsx', '.md', '.html', '.css')):
+                            if file.endswith(('.py', '.js', '.jsx', '.ts', '.tsx', '.md', '.html', '.css', '.json', '.txt')):
                                 file_path = os.path.join(root, file)
                                 try:
                                     with open(file_path, 'r', encoding='utf-8') as f:
                                         content = f.read()
-                                        rel_path = os.path.relpath(file_path, temp_dir)
+                                        rel_path = os.path.relpath(file_path, temp_dir).replace('\\', '/')
+                                        repo_files_map[rel_path] = content
                                         repo_texts.append(f"File: {rel_path}\n{content}")
                                 except Exception:
                                     pass
@@ -132,10 +149,13 @@ class RepoAnalysisAgent(BaseAgent):
                 relevant_docs = vectorstore.similarity_search(query, k=15)
                 rag_context = "\n\n".join([doc.page_content for doc in relevant_docs])
             except Exception as e:
-                self.logger.error(f"RAG embedding failed: {e}")
-                rag_context = "RAG processing failed."
+                self.logger.warning(f"RAG embedding failed, using direct repository file context: {e}")
+                rag_context = "\n\n".join(repo_texts[:8])
         else:
             rag_context = "No relevant repository context could be loaded (check ALLOWED_REPO_PREFIXES or token)."
+
+        if not rag_context or rag_context == "RAG processing failed.":
+            rag_context = "\n\n".join(repo_texts[:8])
 
         qa_feedback = context.get('qa_feedback')
         rework_section = ""
@@ -179,7 +199,8 @@ analysis on files, dependencies, and architectural patterns relevant to resolvin
                     "files_to_modify": parsed.get('files_to_modify', []),
                     "patterns_found": parsed.get('patterns_found', []),
                     "implementation_notes": parsed.get('implementation_notes', ''),
-                    "estimated_complexity": parsed.get('estimated_complexity', 'medium')
+                    "estimated_complexity": parsed.get('estimated_complexity', 'medium'),
+                    "repo_files": repo_files_map
                 }
             )
 
@@ -195,6 +216,7 @@ analysis on files, dependencies, and architectural patterns relevant to resolvin
                     ],
                     "patterns_found": ["Flask Blueprint route validation", "Standard HTTP error responses"],
                     "implementation_notes": "Validate email presence and format before creating user. Return 400 Bad Request on invalid format.",
-                    "estimated_complexity": "low"
+                    "estimated_complexity": "low",
+                    "repo_files": repo_files_map
                 }
             )

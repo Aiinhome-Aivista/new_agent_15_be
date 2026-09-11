@@ -55,7 +55,7 @@ class ValidatorAgent(BaseAgent):
 
         changes = developer_output.get('changes', [])
         changes_list = "\n".join([
-            f"- File: {c.get('file', 'unknown')}\n  Action: {c.get('action')}\n  Description: {c.get('description', '')}"
+            f"- File: {c.get('file', 'unknown')}\n  Action: {c.get('action')}\n  Description: {c.get('description', '')}\n  Code:\n{c.get('code_snippet') or (c.get('full_content', '')[:600])}"
             for c in changes
         ]) or "No changes provided."
 
