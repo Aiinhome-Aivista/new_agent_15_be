@@ -15,9 +15,14 @@ COMMENT_TEMPLATES = {
         "Please update the story and trigger a new run."
     ),
     "ready_for_dev": (
-        "✅ *DEVAA: Story validated — Starting Development*\n\n"
-        "All mandatory fields verified. The development pipeline has been initiated.\n\n"
-        "Repository Analysis complete. Developer Agent is now working on the implementation."
+        "🚀 *DEVAA: Story Validated — Starting Development*\n\n"
+        "All mandatory fields and acceptance criteria have been verified. The automated development pipeline has been initiated.\n\n"
+        "• **Target Branch:** `{branch_name}` (Base: `{base_branch}`)\n"
+        "• **Status:** `{new_status}`\n"
+        "• **Pipeline:** Intake Passed ➔ Repository Analysis ➔ Implementation ➔ Self-Validation ➔ PR Creation\n\n"
+        "**Acceptance Criteria In Scope:**\n"
+        "{acceptance_criteria}\n\n"
+        "Developer Agent is now implementing changes to satisfy all acceptance criteria."
     ),
     "pr_ready": (
         "🔀 *DEVAA: Pull Request Ready for QA Review*\n\n"
@@ -86,10 +91,12 @@ class CommentAgent(BaseAgent):
 
         # ── Update story status in DB ─────────────────────────────
         story_updated = False
-        if new_status and hasattr(story, 'status'):
-            story.status = new_status
+        story_id = story.id if hasattr(story, 'id') else story.get('id')
+        story_model = story if isinstance(story, Story) else (Story.query.get(story_id) if story_id else None)
+        if new_status and story_model:
+            story_model.status = new_status
             if jira_comment_id:
-                story.jira_comment_id = jira_comment_id
+                story_model.jira_comment_id = jira_comment_id
             try:
                 self.db.session.commit()
                 story_updated = True
@@ -103,7 +110,7 @@ class CommentAgent(BaseAgent):
                 text("INSERT INTO jira_comments (story_id, jira_story_key, comment_body, comment_type, jira_comment_id) "
                      "VALUES (:sid, :jkey, :body, :ctype, :jcid)"),
                 {
-                    "sid": story.id if hasattr(story, 'id') else story.get('id'),
+                    "sid": story_id,
                     "jkey": jira_key,
                     "body": comment_body,
                     "ctype": comment_type,

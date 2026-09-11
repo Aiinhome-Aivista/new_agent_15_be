@@ -149,23 +149,52 @@ class Orchestrator:
         self._record_metric(workflow_id, story_id, 'eligibility_accuracy', 1.0, 'Intake validation passed')
 
         # ═══════════════════════════════════════════════════════════
-        # CHANGE B — Jira transition to IN PROGRESS (intake passed)
+        # CHANGE B — Step: Comment (ready_for_dev) & Jira transition to IN PROGRESS
         # Fires immediately after intake passes — before RepoAnalysis
         # ═══════════════════════════════════════════════════════════
-        jira_key = getattr(story, 'jira_story_key', None) if story else None
-        if jira_key:
-            try:
-                from app.services.jira_service import JiraService
-                JiraService.transition_issue(
-                    jira_key,
-                    config.get('JIRA_STATUS_IN_PROGRESS', 'In Progress')
-                )
-                if story:
-                    story.status = 'IN-PROGRESS'
-                    db.session.commit()
-                logger.info(f"[Orchestrator] Jira {jira_key} → In Progress")
-            except Exception as e:
-                logger.warning(f"[Orchestrator] Jira transition failed (non-fatal): {e}")
+        jira_key = getattr(story, 'jira_story_key', None) if story else (context_story.get('jira_story_key') if isinstance(context_story, dict) else None)
+        in_progress_status = config.get('JIRA_STATUS_IN_PROGRESS', 'In Progress')
+
+        # Determine target branch and base branch
+        target_branch = None
+        base_branch = config.get('GITHUB_DEFAULT_BASE_BRANCH', 'main')
+        repo_details = getattr(story, 'repository_details', None) if story else (context_story.get('repository_details') if isinstance(context_story, dict) else None)
+        if repo_details and isinstance(repo_details, list) and len(repo_details) > 0 and isinstance(repo_details[0], dict):
+            target_branch = repo_details[0].get('target_branch') or repo_details[0].get('work_branch')
+            base_branch = repo_details[0].get('branch') or base_branch
+
+        if not target_branch:
+            desc_text = getattr(story, 'description', '') if story else (context_story.get('description', '') if isinstance(context_story, dict) else '')
+            import re
+            tb_m = re.search(r'target_branch\s*[:=]\s*([^\s\n\r]+)', desc_text or '', re.IGNORECASE)
+            if tb_m:
+                target_branch = tb_m.group(1).strip()
+        if not target_branch:
+            target_branch = f"devaa/{jira_key or story_id}"
+
+        ac_text = getattr(story, 'acceptance_criteria', '') if story else (context_story.get('acceptance_criteria', '') if isinstance(context_story, dict) else '')
+        if not ac_text:
+            ac_text = "As specified in story acceptance criteria."
+        elif len(ac_text) > 1200:
+            ac_text = ac_text[:1200] + "..."
+
+        step_dev_start = self._make_step(workflow_id, 'Comment', 'Post development started comment to Jira and transition to In Progress.')
+        try:
+            CommentAgent(db=db, config=config).run({
+                'story': context_story,
+                'comment_type': 'ready_for_dev',
+                'new_status': in_progress_status,
+                'workflow_id': workflow_id,
+                'extra': {
+                    'branch_name': target_branch,
+                    'base_branch': base_branch,
+                    'new_status': in_progress_status,
+                    'acceptance_criteria': ac_text
+                }
+            }, workflow_id=workflow_id, step_record=step_dev_start)
+            logger.info(f"[Orchestrator] Jira {jira_key} comment posted and moved → {in_progress_status}")
+        except Exception as e:
+            logger.warning(f"[Orchestrator] Jira development started comment failed (non-fatal): {e}")
 
         # ═══════════════════════════════════════════════════════════
         # STEP 2 — REPOSITORY ANALYSIS

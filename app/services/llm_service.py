@@ -142,11 +142,10 @@ class LLMService:
 
         candidate_models = [
             preferred_model,
-            "gemini-1.5-flash-latest",
+            "gemini-2.5-flash",      
+            "gemini-2.0-flash",       
+            "gemini-2.0-flash-lite",  
             "gemini-1.5-flash",
-            "gemini-1.5-pro",
-            "gemini-2.0-flash",
-            "gemini-pro"
         ]
         # Deduplicate candidates while keeping order
         seen_models = set()
@@ -182,7 +181,7 @@ class LLMService:
         config = current_app.config
         api_url = config.get("LLM_API_URL")
         model   = config.get("LLM_MODEL")
-        timeout = config.get("LLM_TIMEOUT", 300)
+        timeout = int(config.get("LLM_TIMEOUT", 60))
 
         if not api_url:
             raise ValueError("LLM_API_URL is not configured for local provider.")

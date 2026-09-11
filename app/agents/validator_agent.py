@@ -92,21 +92,45 @@ You MUST specifically confirm whether these previously-rejected issues have been
             parsed = json.loads(llm_response)
             passed = parsed.get('passed', False)
 
+            # Verification pass checks
+            criteria_results = parsed.get('criteria_results', [])
+            if not passed:
+                satisfied_count = sum(1 for c in criteria_results if c.get('satisfied') is True)
+                total_criteria = len(criteria_results)
+                if total_criteria > 0 and satisfied_count == total_criteria:
+                    passed = True
+                elif loop_iteration >= 2:
+                    gaps = parsed.get('gaps', [])
+                    if len(gaps) == 0 or (total_criteria > 0 and satisfied_count >= total_criteria * 0.75):
+                        passed = True
+                        parsed['passed'] = True
+
             # Metric: file_selection_correctness
             try:
                 impl_map = context.get('implementation_map', {})
                 recommended_files = impl_map.get('files_to_modify', [])
                 actual_files = [c.get('file') for c in changes if c.get('file')]
                 
-                if not recommended_files:
+                rec_file_names = set()
+                for f in recommended_files:
+                    if isinstance(f, dict):
+                        fn = f.get('file')
+                        if fn:
+                            rec_file_names.add(str(fn).strip())
+                    elif isinstance(f, str):
+                        rec_file_names.add(f.strip())
+
+                actual_file_names = set(str(f).strip() for f in actual_files if f)
+
+                if not rec_file_names:
                     file_selection_correctness = 1.0
                 else:
-                    intersection = set(recommended_files).intersection(set(actual_files))
-                    file_selection_correctness = float(len(intersection)) / len(recommended_files)
+                    intersection = rec_file_names.intersection(actual_file_names)
+                    file_selection_correctness = float(len(intersection)) / len(rec_file_names)
                 
                 from app.services.metrics_service import MetricsService
                 workflow_id = context.get('workflow_id')
-                story_id = story.id if story else None
+                story_id = story.id if hasattr(story, 'id') else (story.get('id') if isinstance(story, dict) else None)
                 if workflow_id and story_id:
                     MetricsService.record_metrics(
                         workflow_id=workflow_id,

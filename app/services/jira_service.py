@@ -45,6 +45,24 @@ class JiraService:
         return None
 
     @classmethod
+    def _text_to_adf(cls, text: str) -> list:
+        paragraphs = []
+        blocks = str(text).split('\n\n')
+        for block in blocks:
+            lines = block.split('\n')
+            para_content = []
+            for i, line in enumerate(lines):
+                if i > 0:
+                    para_content.append({"type": "hardBreak"})
+                if line:
+                    para_content.append({"type": "text", "text": line})
+            if para_content:
+                paragraphs.append({"type": "paragraph", "content": para_content})
+        if not paragraphs:
+            paragraphs = [{"type": "paragraph", "content": [{"type": "text", "text": str(text)}]}]
+        return paragraphs
+
+    @classmethod
     def add_comment(cls, jira_key: str, comment_body: str) -> str | None:
         """Post a comment to a Jira issue. Returns comment ID or None."""
         if not cls._is_configured():
@@ -55,10 +73,7 @@ class JiraService:
             "body": {
                 "type": "doc",
                 "version": 1,
-                "content": [{
-                    "type": "paragraph",
-                    "content": [{"type": "text", "text": comment_body}]
-                }]
+                "content": cls._text_to_adf(comment_body)
             }
         }
         resp = requests.post(url, json=payload, auth=cls._auth(),

@@ -144,6 +144,23 @@ class JiraTaskProvider(BaseTaskProvider):
             logger.exception(f"Exception during Jira fetch_tasks: {e}")
             return []
 
+    def _text_to_adf(self, text: str) -> list:
+        paragraphs = []
+        blocks = str(text).split('\n\n')
+        for block in blocks:
+            lines = block.split('\n')
+            para_content = []
+            for i, line in enumerate(lines):
+                if i > 0:
+                    para_content.append({"type": "hardBreak"})
+                if line:
+                    para_content.append({"type": "text", "text": line})
+            if para_content:
+                paragraphs.append({"type": "paragraph", "content": para_content})
+        if not paragraphs:
+            paragraphs = [{"type": "paragraph", "content": [{"type": "text", "text": str(text)}]}]
+        return paragraphs
+
     def add_comment(self, task_id: str, comment_body: str) -> Optional[str]:
         if not self._is_configured():
             logger.warning("Jira not configured. Comment skipped.")
@@ -154,10 +171,7 @@ class JiraTaskProvider(BaseTaskProvider):
             "body": {
                 "type": "doc",
                 "version": 1,
-                "content": [{
-                    "type": "paragraph",
-                    "content": [{"type": "text", "text": comment_body}]
-                }]
+                "content": self._text_to_adf(comment_body)
             }
         }
         try:
