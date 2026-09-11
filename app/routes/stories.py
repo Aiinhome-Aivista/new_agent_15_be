@@ -307,10 +307,13 @@ def update_story(story_id):
     if story.owner_id != user.id and (role and role.name != 'Admin'):
         return jsonify({"error": "You can only edit your own stories"}), 403
 
-    # Enforce TO-DO status rule
+    # Enforce TO-DO / INVALID status rule
     norm_status = (story.status or '').upper().replace('-', '').replace('_', '').replace(' ', '')
-    if norm_status not in ['TODO', 'OPEN']:
-        return jsonify({"error": f"Story cannot be edited because it is in '{story.status}' status. Only TO-DO stories can be edited."}), 400
+    if norm_status not in ['TODO', 'OPEN', 'INVALID']:
+        return jsonify({"error": f"Story cannot be edited because it is in '{story.status}' status. Only TO-DO or INVALID stories can be edited."}), 400
+
+    if story.status == 'INVALID':
+        story.status = 'TO-DO'
 
 
     data = request.get_json() or {}
@@ -399,6 +402,11 @@ def trigger_run(story_id):
 
     if story.status in ('IN-PROGRESS', 'QA-TESTING'):
         return jsonify({"error": f"Story is already in '{story.status}' state. Cannot trigger a new run."}), 409
+
+    # Reset INVALID status to TO-DO on retry
+    if story.status == 'INVALID':
+        story.status = 'TO-DO'
+        db.session.commit()
 
     # Create linked workflow
     workflow = Workflow(

@@ -52,11 +52,15 @@ class BranchPRAgent(BaseAgent):
                 }
             )
 
-        # ── Generate branch name ──────────────────────────────────
+        # ── Check for user-specified target branch or generate default ────
+        repo_details = story.repository_details if hasattr(story, 'repository_details') else (story.get('repository_details') if isinstance(story, dict) else [])
+        first_repo = repo_details[0] if isinstance(repo_details, list) and len(repo_details) > 0 and isinstance(repo_details[0], dict) else {}
+        custom_target_branch = getattr(story, 'target_branch', None) or first_repo.get('target_branch') or first_repo.get('work_branch')
+
         title = story.title if hasattr(story, 'title') else story.get('title', 'feature')
         jira_key = story.jira_story_key if hasattr(story, 'jira_story_key') else story.get('jira_story_key', '')
         safe_title = re.sub(r'[^a-zA-Z0-9\-]', '-', title.lower())[:40].strip('-')
-        branch_name = f"devaa/{jira_key.lower() + '/' if jira_key else ''}{safe_title}-wf{workflow_id}"
+        branch_name = custom_target_branch or f"devaa/{jira_key.lower() + '/' if jira_key else ''}{safe_title}-wf{workflow_id}"
 
         # ── Generate PR summary via LLM ───────────────────────────
         changes = developer_output.get('changes', [])
@@ -131,26 +135,64 @@ class BranchPRAgent(BaseAgent):
         )
 
     def _create_github_pr(self, story, branch_name, pr_title, pr_body, github_token, base_branch):
-        """Attempt to create a real GitHub PR. Returns (pr_url, pr_number) or (None, None)."""
+        """Attempt to create a real GitHub PR. Returns (pr_url, pr_number) or (None, None).
+        Ensures the branch exists on remote; if not, creates it from base_branch.
+        """
         import requests
         try:
+            from flask import current_app
             repos = story.repository_details or []
-            if not repos:
-                return None, None
-
-            first_repo = repos[0] if isinstance(repos, list) else repos
+            first_repo = repos[0] if isinstance(repos, list) and repos else repos
             repo_name = first_repo.get('name', '') if isinstance(first_repo, dict) else str(first_repo)
+            repo_url = first_repo.get('url', '') if isinstance(first_repo, dict) else ''
 
-            if not repo_name:
+            raw_base = current_app.config.get('GITHUB_BASE_URL', 'https://api.github.com')
+            api_base = "https://api.github.com" if "github.com" in raw_base and not raw_base.startswith("https://api.github.com") else raw_base.rstrip('/')
+            org = current_app.config.get('GITHUB_ORG', '')
+
+            # Extract org / repo_name from URL if config is just the repo clone URL
+            if (not org or not repo_name) and (repo_url or raw_base):
+                u = repo_url or raw_base
+                if 'github.com/' in u:
+                    parts = u.split('github.com/')[-1].replace('.git', '').strip('/').split('/')
+                    if len(parts) >= 2:
+                        if not org: org = parts[0]
+                        if not repo_name: repo_name = parts[1]
+
+            if not org or not repo_name:
+                self.logger.warning("Could not determine GitHub org and repo_name for PR creation.")
                 return None, None
 
             headers = {
                 "Authorization": f"Bearer {github_token}",
                 "Accept": "application/vnd.github.v3+json"
             }
-            from flask import current_app
-            api_url = f"{current_app.config['GITHUB_BASE_URL']}/repos/{current_app.config['GITHUB_ORG']}/{repo_name}/pulls"
 
+            # ── Check if branch exists; if not, create it from base_branch ─
+            branch_ref_url = f"{api_base}/repos/{org}/{repo_name}/git/ref/heads/{branch_name}"
+            ref_resp = requests.get(branch_ref_url, headers=headers, timeout=10)
+
+            if ref_resp.status_code == 404:
+                # Branch does not exist on remote -> fetch base_branch commit SHA
+                base_ref_url = f"{api_base}/repos/{org}/{repo_name}/git/ref/heads/{base_branch}"
+                base_resp = requests.get(base_ref_url, headers=headers, timeout=10)
+                if base_resp.status_code == 200:
+                    base_sha = base_resp.json().get('object', {}).get('sha')
+                    if base_sha:
+                        create_ref_url = f"{api_base}/repos/{org}/{repo_name}/git/refs"
+                        create_resp = requests.post(create_ref_url, json={
+                            "ref": f"refs/heads/{branch_name}",
+                            "sha": base_sha
+                        }, headers=headers, timeout=10)
+                        if create_resp.status_code in (200, 201):
+                            self.logger.info(f"Created new branch '{branch_name}' from '{base_branch}' on GitHub.")
+                        else:
+                            self.logger.warning(f"Could not create branch on GitHub: {create_resp.status_code} {create_resp.text}")
+            elif ref_resp.status_code == 200:
+                self.logger.info(f"Branch '{branch_name}' already exists on GitHub. Using existing branch.")
+
+            # ── Create Pull Request ───────────────────────────────────────
+            api_url = f"{api_base}/repos/{org}/{repo_name}/pulls"
             payload = {
                 "title": pr_title,
                 "body": pr_body,
@@ -162,7 +204,7 @@ class BranchPRAgent(BaseAgent):
                 data = resp.json()
                 return data.get('html_url'), data.get('number')
             else:
-                self.logger.warning(f"GitHub PR creation failed: {resp.status_code} {resp.text[:200]}")
+                self.logger.warning(f"GitHub PR creation response: {resp.status_code} {resp.text[:200]}")
         except Exception as e:
             self.logger.warning(f"GitHub API call failed: {e}")
         return None, None

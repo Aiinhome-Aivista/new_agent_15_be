@@ -32,6 +32,10 @@ class SyncService:
             created_count = 0
             skipped_count = 0
 
+            import re
+            default_base_branch = current_app.config.get('GITHUB_DEFAULT_BASE_BRANCH', 'main')
+            default_repo_url = current_app.config.get('GITHUB_BASE_URL', '')
+
             for task in external_tasks:
                 # Check if it already exists locally
                 existing = Story.query.filter_by(external_task_id=task.external_id).first()
@@ -39,7 +43,44 @@ class SyncService:
                 if not existing:
                     existing = Story.query.filter_by(jira_story_key=task.external_id).first()
 
+                # Extract acceptance criteria if present in description
+                task_ac = (task.acceptance_criteria or "").strip()
+                task_title = (task.title or "").strip()
+                task_desc = (task.description or "").strip()
+
+                if not task_ac and task_desc:
+                    ac_match = re.search(
+                        r'(?:Acceptance Criteria|ACs?)\s*[:\n\-]+(.*?)(?=(?:\n\s*(?:Technical Constraints|Constraints|Expected Outcome|Notes|Expected Output)|$))',
+                        task_desc,
+                        re.IGNORECASE | re.DOTALL
+                    )
+                    if not ac_match:
+                        ac_match = re.search(r'((?:AC\d+|AC\s*\d+)[\s\S]*)', task_desc, re.IGNORECASE)
+                    if ac_match:
+                        task_ac = ac_match.group(1).strip()
+
+                if task_title and (task_title.lower().startswith('task ') or task_title.lower().startswith('scrum-')):
+                    t_match = re.search(r'(?:^|\n)\s*Title\s*:\s*([^\n\r]+)', task_desc, re.IGNORECASE)
+                    if t_match and t_match.group(1).strip():
+                        task_title = t_match.group(1).strip()
+
                 if existing:
+                    # Update any missing fields on existing story
+                    updated = False
+                    if not existing.source_branch:
+                        existing.source_branch = default_base_branch
+                        updated = True
+                    if not existing.acceptance_criteria and task_ac:
+                        existing.acceptance_criteria = task_ac
+                        updated = True
+                    if (existing.title.lower().startswith('task ') or existing.title.lower().startswith('scrum-')) and task_title != existing.title:
+                        existing.title = task_title
+                        updated = True
+                    if existing.status == 'INVALID':
+                        existing.status = 'TO-DO'
+                        updated = True
+                    if updated:
+                        db.session.commit()
                     skipped_count += 1
                     continue
                 
@@ -50,13 +91,14 @@ class SyncService:
                     external_task_id=task.external_id,
                     external_provider=provider_name,
                     jira_story_key=task.external_id if provider_name == 'jira' else None, # For backwards UI compatibility
-                    title=task.title,
-                    description=task.description,
-                    acceptance_criteria=task.acceptance_criteria,
+                    title=task_title,
+                    description=task_desc,
+                    acceptance_criteria=task_ac,
+                    source_branch=default_base_branch,
                     assignee_id=user.id, # Map back to local DEVAA user
                     owner_id=user.id, # Consider the user initiating the sync as the owner
                     status='TO-DO',
-                    repository_details=[{"name": "", "url": "", "branch": "main", "external_assignee": task.assignee_email}] # Store assignee here for UI
+                    repository_details=[{"name": "main-repo", "url": default_repo_url, "branch": default_base_branch, "external_assignee": task.assignee_email}] # Store assignee here for UI
                 )
                 db.session.add(new_story)
                 created_count += 1

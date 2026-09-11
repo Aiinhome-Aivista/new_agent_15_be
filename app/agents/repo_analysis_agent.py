@@ -79,7 +79,17 @@ class RepoAnalysisAgent(BaseAgent):
                     if github_token and "github.com" in repo_url:
                         clone_url = repo_url.replace("https://github.com/", f"https://oauth2:{github_token}@github.com/")
 
-                    subprocess.check_call(['git', 'clone', '--depth', '1', clone_url, temp_dir])
+                    target_branch = source_branch or repo.get('branch') or self.config.get('GITHUB_DEFAULT_BASE_BRANCH', 'main')
+                    clone_cmd = ['git', 'clone', '--depth', '1']
+                    if target_branch:
+                        clone_cmd.extend(['-b', target_branch])
+                    clone_cmd.extend([clone_url, temp_dir])
+
+                    try:
+                        subprocess.check_call(clone_cmd)
+                    except subprocess.CalledProcessError:
+                        self.logger.warning(f"Branch '{target_branch}' not found on remote, falling back to default clone.")
+                        subprocess.check_call(['git', 'clone', '--depth', '1', clone_url, temp_dir])
                     
                     # Read files
                     for root, _, files in os.walk(temp_dir):
