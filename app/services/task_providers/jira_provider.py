@@ -104,7 +104,13 @@ class JiraTaskProvider(BaseTaskProvider):
             if resp.status_code == 200:
                 issues = resp.json().get('issues', [])
                 tasks = []
+                seen_keys = set()
                 for issue in issues:
+                    issue_key = (issue.get('key') or issue.get('id') or '').strip()
+                    if not issue_key or issue_key.lower() in seen_keys:
+                        continue
+                    seen_keys.add(issue_key.lower())
+
                     fields_data = issue.get('fields', {})
                     desc_adf = fields_data.get('description')
                     description_text = self._extract_adf_text(desc_adf)
@@ -116,7 +122,6 @@ class JiraTaskProvider(BaseTaskProvider):
                         "Unassigned"
                     ) if assignee_obj else "Unassigned"
 
-                    issue_key = issue.get('key') or issue.get('id')
                     status_name = fields_data.get('status', {}).get('name', status)
                     priority_name = fields_data.get('priority', {}).get('name') or "High"
                     title = fields_data.get('summary') or f"Task {issue_key}"

@@ -97,6 +97,19 @@ class IntakeValidationAgent(BaseAgent):
             elif isinstance(story, dict):
                 story['repository_details'] = target_repo
 
+        # 5. target_branch auto-extraction from description
+        desc_full = getattr(story, 'description', '') if hasattr(story, 'description') else (story.get('description', '') if isinstance(story, dict) else '')
+        if desc_full:
+            import re
+            tb_match = re.search(r'target_branch\s*[:=]\s*([^\s\n\r]+)', desc_full, re.IGNORECASE)
+            if tb_match:
+                extracted_tb = tb_match.group(1).strip()
+                repos = getattr(story, 'repository_details', None) if hasattr(story, 'repository_details') else (story.get('repository_details') if isinstance(story, dict) else None)
+                if repos and isinstance(repos, list) and isinstance(repos[0], dict):
+                    repos[0]['target_branch'] = extracted_tb
+                    if hasattr(story, 'repository_details'):
+                        story.repository_details = list(repos)
+
         # Commit auto-filled fields to DB if story is a DB model
         if hasattr(self, 'db') and hasattr(self.db, 'session'):
             try:

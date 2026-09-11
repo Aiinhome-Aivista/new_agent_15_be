@@ -134,7 +134,7 @@ class LLMService:
         api_key = _get_gemini_key(config, agent_name)
 
         genai.configure(api_key=api_key)
-        preferred_model = config.get("GEMINI_MODEL", "gemini-1.5-flash")
+        preferred_model = config.get("GEMINI_MODEL", "gemini-3.1-flash-lite")
 
         kwargs = {}
         if system_instruction:
