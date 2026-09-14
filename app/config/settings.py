@@ -64,7 +64,7 @@ class Config:
 
     # ── Jira Integration ────────────────────────────────────────
     ACTIVE_TASK_PROVIDER = os.getenv("ACTIVE_TASK_PROVIDER", "jira")
-    MIN_SYNC_PRIORITY = os.getenv("MIN_SYNC_PRIORITY", "High")
+    MIN_SYNC_PRIORITY = os.getenv("MIN_SYNC_PRIORITY", "all")
     JIRA_BASE_URL = os.getenv("JIRA_BASE_URL", "")
     JIRA_PROJECT_KEY = os.getenv("JIRA_PROJECT_KEY", "DEVAA")
     JIRA_EMAIL = os.getenv("JIRA_EMAIL", "")

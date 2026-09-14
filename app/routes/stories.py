@@ -22,7 +22,9 @@ def sync_stories():
     """
     Manually trigger a sync of tasks from the configured external provider (e.g. Jira).
     """
-    result = SyncService.sync_assigned_tasks(user_id=request.current_user.id)
+    data = request.get_json(silent=True) or {}
+    project_key = data.get('project_key') or request.args.get('project_key')
+    result = SyncService.sync_assigned_tasks(user_id=request.current_user.id, project_key=project_key)
     if "error" in result:
         return jsonify(result), 500
     return jsonify(result), 200

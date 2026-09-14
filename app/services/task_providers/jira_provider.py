@@ -39,41 +39,58 @@ class JiraTaskProvider(BaseTaskProvider):
             return " ".join(self._extract_adf_text(item) for item in adf_node if item).strip()
         return ""
 
-    def _build_jql(self, min_priority: str = "High", status: str = "To Do") -> str:
+    def _build_jql(self, min_priority: str = "all", status: str = "To Do", project_key: Optional[str] = None) -> str:
         conditions = []
         
+        # Project constraint: ensures query is bounded and targets selected project
+        proj_key = (project_key or current_app.config.get('JIRA_PROJECT_KEY') or '').strip()
+        if proj_key:
+            conditions.append(f'project = "{proj_key}"')
+
+        # Only standard issue types (Story, Task, Bug) - avoid pulling Subtasks
+        conditions.append('issuetype in standardIssueTypes()')
+
         # Priority mapping: Jira does NOT support >= operator on priority
+        # If min_priority is "all" or empty, no filter is applied so all priorities (including unset/None) are included
         priority_levels = ["Lowest", "Low", "Medium", "High", "Highest"]
         min_p = (min_priority or "").capitalize()
         if min_p in priority_levels:
             idx = priority_levels.index(min_p)
-            allowed = priority_levels[idx:]
-            if "Highest" in allowed:
+            if idx == 0:
+                # Lowest: include all priorities plus unset/empty
+                allowed = list(priority_levels)
                 allowed.extend(["Critical", "Blocker"])
-            p_list = ", ".join(f'"{p}"' for p in allowed)
-            conditions.append(f'priority in ({p_list})')
-        elif min_p and min_p.lower() != "all":
+                p_list = ", ".join(f'"{p}"' for p in allowed)
+                conditions.append(f'(priority in ({p_list}) OR priority is EMPTY)')
+            else:
+                allowed = priority_levels[idx:]
+                if "Highest" in allowed:
+                    allowed.extend(["Critical", "Blocker"])
+                p_list = ", ".join(f'"{p}"' for p in allowed)
+                conditions.append(f'priority in ({p_list})')
+        elif min_p and min_p.lower() not in ("all", "any", "none", ""):
             conditions.append(f'priority = "{min_priority}"')
 
         # Status condition
-        if status:
-            conditions.append(f'status in ("{status}", "To Do", "TODO", "Open")')
+        if status and status.lower() not in ("all", "any"):
+            conditions.append(f'status in ("{status}", "To Do", "TODO", "Open", "Backlog")')
 
         jql_body = " AND ".join(conditions)
         return f"{jql_body} ORDER BY created DESC" if jql_body else "ORDER BY created DESC"
 
-    def fetch_tasks(self, assignee_email: str, min_priority: str = "High", status: str = "To Do") -> List[TaskModel]:
+    def fetch_tasks(self, assignee_email: str, min_priority: str = "all", status: str = "To Do", project_key: Optional[str] = None) -> List[TaskModel]:
         if not self._is_configured():
             logger.warning("Jira not configured. Skipping fetch_tasks.")
             return []
 
-        jql = self._build_jql(min_priority=min_priority, status=status)
+        proj_key = (project_key or current_app.config.get('JIRA_PROJECT_KEY') or '').strip()
+        jql = self._build_jql(min_priority=min_priority, status=status, project_key=proj_key)
         url = f"{self._base().rstrip('/')}/rest/api/3/search/jql"
         headers = {
             "Accept": "application/json",
             "Content-Type": "application/json"
         }
-        fields = ["summary", "description", "status", "priority", "assignee", "key"]
+        fields = ["summary", "description", "status", "priority", "assignee", "key", "duedate"]
         
         try:
             payload = {
@@ -85,17 +102,19 @@ class JiraTaskProvider(BaseTaskProvider):
             
             if resp.status_code != 200:
                 logger.warning(f"Jira query with jql '{jql}' returned {resp.status_code}: {resp.text}. Trying fallback query...")
-                # Fallback 1: status only
+                proj_prefix = f'project = "{proj_key}" AND ' if proj_key else ''
+                # Fallback 1: project and status only
                 fallback_payload = {
-                    "jql": f'status = "{status}" ORDER BY created DESC',
+                    "jql": f'{proj_prefix}status in ("{status}", "To Do", "TODO", "Open", "Backlog") ORDER BY created DESC',
                     "maxResults": 50,
                     "fields": fields
                 }
                 resp = requests.post(url, auth=self._auth(), json=fallback_payload, headers=headers)
                 if resp.status_code != 200:
-                    logger.warning(f"Fallback 1 failed. Trying broad fallback ORDER BY created DESC...")
+                    logger.warning(f"Fallback 1 failed. Trying broad fallback...")
+                    broad_jql = f'project = "{proj_key}" ORDER BY created DESC' if proj_key else "ORDER BY created DESC"
                     fallback_payload2 = {
-                        "jql": "ORDER BY created DESC",
+                        "jql": broad_jql,
                         "maxResults": 50,
                         "fields": fields
                     }
@@ -122,8 +141,15 @@ class JiraTaskProvider(BaseTaskProvider):
                         "Unassigned"
                     ) if assignee_obj else "Unassigned"
 
-                    status_name = fields_data.get('status', {}).get('name', status)
-                    priority_name = fields_data.get('priority', {}).get('name') or "High"
+                    status_obj = fields_data.get('status')
+                    status_name = (status_obj.get('name') if isinstance(status_obj, dict) else None) or status
+                    
+                    priority_obj = fields_data.get('priority')
+                    priority_name = (priority_obj.get('name') if isinstance(priority_obj, dict) else None) or "Medium"
+                    
+                    due_date_raw = fields_data.get('duedate')
+                    due_date = str(due_date_raw).strip() if due_date_raw else None
+
                     title = fields_data.get('summary') or f"Task {issue_key}"
 
                     tasks.append(TaskModel(
@@ -133,7 +159,8 @@ class JiraTaskProvider(BaseTaskProvider):
                         acceptance_criteria="",
                         assignee_email=actual_assignee,
                         priority=priority_name,
-                        status=status_name
+                        status=status_name,
+                        due_date=due_date
                     ))
                 logger.info(f"Successfully fetched {len(tasks)} issues from Jira using /rest/api/3/search/jql.")
                 return tasks

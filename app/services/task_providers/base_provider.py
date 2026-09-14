@@ -11,6 +11,7 @@ class TaskModel:
     assignee_email: Optional[str] = None
     priority: Optional[str] = None
     status: str = 'TO-DO'
+    due_date: Optional[str] = None
 
 
 class BaseTaskProvider(ABC):
@@ -20,9 +21,9 @@ class BaseTaskProvider(ABC):
     """
 
     @abstractmethod
-    def fetch_tasks(self, assignee_email: str, min_priority: str, status: str = "To Do") -> List[TaskModel]:
+    def fetch_tasks(self, assignee_email: str, min_priority: str = "all", status: str = "To Do", project_key: Optional[str] = None) -> List[TaskModel]:
         """
-        Fetch tasks assigned to a specific user with a minimum priority.
+        Fetch tasks assigned to a specific user with an optional project and priority filter.
         """
         pass
 
