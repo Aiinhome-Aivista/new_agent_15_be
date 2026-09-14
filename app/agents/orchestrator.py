@@ -183,31 +183,16 @@ class Orchestrator:
         jira_key = getattr(story, 'jira_story_key', None) if story else (context_story.get('jira_story_key') if isinstance(context_story, dict) else None)
         in_progress_status = config.get('JIRA_STATUS_IN_PROGRESS', 'In Progress')
 
-        # Determine target branch and base branch
-        target_branch = None
+        # Determine feature branch name (feat/jira-story-key_random 8 digit number) and base branch
+        import random
         base_branch = config.get('GITHUB_DEFAULT_BASE_BRANCH', 'main')
         repo_details = getattr(story, 'repository_details', None) if story else (context_story.get('repository_details') if isinstance(context_story, dict) else None)
         if repo_details and isinstance(repo_details, list) and len(repo_details) > 0 and isinstance(repo_details[0], dict):
-            target_branch = repo_details[0].get('target_branch') or repo_details[0].get('work_branch')
             base_branch = repo_details[0].get('branch') or base_branch
 
-        if not target_branch:
-            texts_to_check = [
-                getattr(story, 'description', '') if story else '',
-                getattr(story, 'title', '') if story else '',
-                context_story.get('description', '') if isinstance(context_story, dict) else '',
-                context_story.get('title', '') if isinstance(context_story, dict) else '',
-                context_story.get('requirements_doc', '') if isinstance(context_story, dict) else ''
-            ]
-            import re
-            for t in texts_to_check:
-                if t:
-                    tb_m = re.search(r'target_branch\s*[:=]\s*([^\s\n\r,;|]+)', t, re.IGNORECASE)
-                    if tb_m:
-                        target_branch = tb_m.group(1).strip()
-                        break
-        if not target_branch:
-            target_branch = f"devaa/{jira_key or story_id}"
+        key_identifier = jira_key or (f"STORY-{story_id}" if story_id else "TASK")
+        random_digits = random.randint(10000000, 99999999)
+        target_branch = f"feat/{key_identifier}_{random_digits}"
 
         ac_text = getattr(story, 'acceptance_criteria', '') if story else (context_story.get('acceptance_criteria', '') if isinstance(context_story, dict) else '')
         if not ac_text:
@@ -347,7 +332,7 @@ class Orchestrator:
                     log_event(
                         story_id=story_id or 0, workflow_id=workflow_id,
                         agent='Developer', level='info',
-                        message=f'⚡ Changed Files Re-indexed into Overlay ({reindex_res["upserted_chunks"]} chunks, {reindex_res["tombstones_recorded"]} tombstones)',
+                        message=f'⚡ Changed Files Re-indexed into Overlay ({len(reindex_res.get("updated_files", []))} file(s) updated, {len(reindex_res.get("tombstoned_files", []))} deleted)',
                         detail=f'Collection: {overlay_col.name}'
                     )
                     logger.info(f"[Orchestrator] Changed files re-indexed into {overlay_col.name}: {reindex_res}")
@@ -384,12 +369,13 @@ class Orchestrator:
                 break
             else:
                 # Update feedback for next dev iteration (validator feedback takes priority)
-                validator_qa_feedback = val_result.output.get('feedback_for_developer', '') or validator_qa_feedback
+                val_out = val_result.output if isinstance(val_result.output, dict) else {}
+                validator_qa_feedback = val_out.get('feedback_for_developer', '') or validator_qa_feedback or ''
                 log_event(story_id=story_id or 0, workflow_id=workflow_id,
                           agent='Validator', level='warning',
                           message=f'⚠️ Validator rejected iteration {loop_count} — retrying with feedback',
                           detail=str(validator_qa_feedback)[:300])
-                logger.info(f"[Orchestrator] Validator rejected (loop {loop_count}). Feedback: {validator_qa_feedback[:100]}")
+                logger.info(f"[Orchestrator] Validator rejected (loop {loop_count}). Feedback: {str(validator_qa_feedback)[:100]}")
 
         if not validation_passed:
             changes = developer_output.get('changes', []) if developer_output else []
@@ -464,8 +450,6 @@ class Orchestrator:
 
             # Save evidence.md locally to workspace root
             try:
-                import os
-                from flask import current_app
                 proj_root = os.path.abspath(os.path.join(current_app.root_path, '..', '..'))
                 local_evidence_path = os.path.join(proj_root, evidence_filename)
                 with open(local_evidence_path, 'w', encoding='utf-8') as ef:

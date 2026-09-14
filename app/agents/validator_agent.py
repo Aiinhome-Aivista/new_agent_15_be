@@ -3,6 +3,7 @@ ValidatorAgent — Step 4
 Independently reviews Developer Agent output against the original acceptance criteria.
 Drives the self-correction loop.
 """
+import os
 from app.agents.base_agent import BaseAgent, AgentResult
 from app.services.llm_service import LLMService
 
@@ -76,7 +77,6 @@ You MUST specifically confirm whether these previously-rejected issues have been
         repo_dir = impl_map.get('repo_dir') or context.get('workspace_dir')
         disk_verified_count = 0
         if repo_dir and os.path.exists(repo_dir):
-            import os
             for c in changes:
                 rf = c.get('file')
                 if rf and os.path.exists(os.path.join(repo_dir, rf)):
