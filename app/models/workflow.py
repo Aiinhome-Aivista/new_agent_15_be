@@ -1,5 +1,6 @@
 from app import db
 from datetime import datetime
+from app.utils.time_utils import get_ist_now
 
 class Workflow(db.Model):
     __tablename__ = 'workflows'
@@ -17,8 +18,8 @@ class Workflow(db.Model):
     requirements_doc = db.Column(db.Text, nullable=True)
     current_agent = db.Column(db.String(100), nullable=True)
     loop_iteration = db.Column(db.Integer, default=1)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=get_ist_now)
+    updated_at = db.Column(db.DateTime, default=get_ist_now, onupdate=get_ist_now)
 
     # Relationships
     owner = db.relationship('User', backref='workflows', foreign_keys=[owner_id])
@@ -37,8 +38,9 @@ class WorkflowStep(db.Model):
     loop_iteration = db.Column(db.Integer, default=1)
     guardrail_triggered = db.Column(db.Boolean, default=False)
     guardrail_reason = db.Column(db.Text, nullable=True)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=get_ist_now)
+    updated_at = db.Column(db.DateTime, default=get_ist_now, onupdate=get_ist_now)
 
     # Relationships
     workflow = db.relationship('Workflow', backref=db.backref('steps', lazy=True, cascade='all, delete-orphan'))
+

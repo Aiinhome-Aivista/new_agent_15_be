@@ -1,5 +1,6 @@
 from app import db
 from datetime import datetime
+from app.utils.time_utils import get_ist_now, format_ist_iso
 
 
 class PullRequest(db.Model):
@@ -17,7 +18,7 @@ class PullRequest(db.Model):
     created_by = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=True)
     merged_by = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=True)
     merged_at = db.Column(db.DateTime, nullable=True)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=get_ist_now)
 
     # Relationships
     qa_reviews = db.relationship('QAReview', backref='pull_request', lazy=True)
@@ -35,8 +36,8 @@ class PullRequest(db.Model):
             'changed_files': self.changed_files,
             'created_by': self.created_by,
             'merged_by': self.merged_by,
-            'merged_at': self.merged_at.isoformat() if self.merged_at else None,
-            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'merged_at': format_ist_iso(self.merged_at),
+            'created_at': format_ist_iso(self.created_at),
         }
 
 
@@ -51,7 +52,7 @@ class QAReview(db.Model):
     decision = db.Column(db.String(50), nullable=False)  # approved | rejected
     comments = db.Column(db.Text, nullable=True)
     is_rework = db.Column(db.Boolean, default=False)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=get_ist_now)
 
     reviewer = db.relationship('User', backref='qa_reviews')
 
@@ -65,7 +66,7 @@ class QAReview(db.Model):
             'decision': self.decision,
             'comments': self.comments,
             'is_rework': self.is_rework,
-            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'created_at': format_ist_iso(self.created_at),
         }
 
 
@@ -78,7 +79,7 @@ class GuardrailEvent(db.Model):
     rail_type = db.Column(db.String(50), nullable=False)  # input | dialog | retrieval | execution | output
     action_blocked = db.Column(db.String(255), nullable=True)
     reason = db.Column(db.Text, nullable=True)
-    triggered_at = db.Column(db.DateTime, default=datetime.utcnow)
+    triggered_at = db.Column(db.DateTime, default=get_ist_now)
 
     def to_dict(self):
         return {
@@ -88,7 +89,7 @@ class GuardrailEvent(db.Model):
             'rail_type': self.rail_type,
             'action_blocked': self.action_blocked,
             'reason': self.reason,
-            'triggered_at': self.triggered_at.isoformat() if self.triggered_at else None,
+            'triggered_at': format_ist_iso(self.triggered_at),
         }
 
 
@@ -101,7 +102,7 @@ class SuccessMetric(db.Model):
     metric_name = db.Column(db.String(100), nullable=False)
     metric_value = db.Column(db.Numeric(10, 4), nullable=True)
     notes = db.Column(db.Text, nullable=True)
-    measured_at = db.Column(db.DateTime, default=datetime.utcnow)
+    measured_at = db.Column(db.DateTime, default=get_ist_now)
 
     def to_dict(self):
         return {
@@ -111,7 +112,7 @@ class SuccessMetric(db.Model):
             'metric_name': self.metric_name,
             'metric_value': float(self.metric_value) if self.metric_value else None,
             'notes': self.notes,
-            'measured_at': self.measured_at.isoformat() if self.measured_at else None,
+            'measured_at': format_ist_iso(self.measured_at),
         }
 
 
@@ -125,7 +126,7 @@ class AuditLog(db.Model):
     event_type = db.Column(db.String(100), nullable=False)
     event_data = db.Column(db.JSON, nullable=True)
     ip_address = db.Column(db.String(45), nullable=True)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=get_ist_now)
 
     def to_dict(self):
         return {
@@ -135,7 +136,7 @@ class AuditLog(db.Model):
             'user_id': self.user_id,
             'event_type': self.event_type,
             'event_data': self.event_data,
-            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'created_at': format_ist_iso(self.created_at),
         }
 
 
@@ -158,7 +159,7 @@ class PipelineLog(db.Model):
     level       = db.Column(db.String(20),  nullable=False, default='info')
     message     = db.Column(db.Text, nullable=False)
     detail      = db.Column(db.Text, nullable=True)   # optional extra context / JSON
-    created_at  = db.Column(db.DateTime, default=datetime.utcnow)
+    created_at  = db.Column(db.DateTime, default=get_ist_now)
 
     def to_dict(self):
         return {
@@ -169,5 +170,6 @@ class PipelineLog(db.Model):
             'level':       self.level,
             'message':     self.message,
             'detail':      self.detail,
-            'created_at':  self.created_at.isoformat() if self.created_at else None,
+            'created_at':  format_ist_iso(self.created_at),
         }
+
