@@ -79,11 +79,6 @@ class SyncService:
                     if t_match and t_match.group(1).strip():
                         task_title = t_match.group(1).strip()
 
-                # Extract target_branch if specified in description (e.g. "target_branch : devaa1")
-                extracted_target_branch = None
-                tb_match = re.search(r'target_branch\s*[:=]\s*([^\s\n\r]+)', task_desc, re.IGNORECASE)
-                if tb_match:
-                    extracted_target_branch = tb_match.group(1).strip()
 
                 if existing:
                     # Update any missing fields on existing story
@@ -113,9 +108,6 @@ class SyncService:
                             det_updated = True
                         if task.due_date and first_det.get('due_date') != task.due_date:
                             first_det['due_date'] = task.due_date
-                            det_updated = True
-                        if extracted_target_branch and first_det.get('target_branch') != extracted_target_branch:
-                            first_det['target_branch'] = extracted_target_branch
                             det_updated = True
                         if det_updated:
                             existing.repository_details = details

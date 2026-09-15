@@ -52,43 +52,19 @@ class BranchPRAgent(BaseAgent):
                 }
             )
 
-        # ── Check for user-specified target branch or generate default ────
-        repo_details = story.repository_details if hasattr(story, 'repository_details') else (story.get('repository_details') if isinstance(story, dict) else [])
-        if isinstance(repo_details, str):
-            import json
-            try:
-                repo_details = json.loads(repo_details)
-            except Exception:
-                repo_details = []
+        # ── Determine feature branch name: feat/jira-story-key_random 8 digit number ──
+        jira_key = story.jira_story_key if hasattr(story, 'jira_story_key') else (story.get('jira_story_key', '') if isinstance(story, dict) else '')
+        story_id = story.id if hasattr(story, 'id') else (story.get('id', '') if isinstance(story, dict) else '')
+        title = story.title if hasattr(story, 'title') else (story.get('title', 'feature') if isinstance(story, dict) else 'feature')
 
-        first_repo = repo_details[0] if isinstance(repo_details, list) and len(repo_details) > 0 and isinstance(repo_details[0], dict) else {}
-        
-        custom_target_branch = (
-            context.get('target_branch') or
-            getattr(story, 'target_branch', None) or
-            (story.get('target_branch') if isinstance(story, dict) else None) or
-            first_repo.get('target_branch') or
-            first_repo.get('work_branch')
-        )
-
-        if not custom_target_branch:
-            texts_to_check = [
-                getattr(story, 'description', '') if hasattr(story, 'description') else '',
-                getattr(story, 'title', '') if hasattr(story, 'title') else '',
-                story.get('description', '') if isinstance(story, dict) else '',
-                story.get('title', '') if isinstance(story, dict) else ''
-            ]
-            for t in texts_to_check:
-                if t:
-                    tb_m = re.search(r'target_branch\s*[:=]\s*([^\s\n\r,;|]+)', t, re.IGNORECASE)
-                    if tb_m:
-                        custom_target_branch = tb_m.group(1).strip()
-                        break
-
-        title = story.title if hasattr(story, 'title') else story.get('title', 'feature')
-        jira_key = story.jira_story_key if hasattr(story, 'jira_story_key') else story.get('jira_story_key', '')
-        safe_title = re.sub(r'[^a-zA-Z0-9\-]', '-', title.lower())[:40].strip('-')
-        branch_name = custom_target_branch or f"devaa/{jira_key.lower() + '/' if jira_key else ''}{safe_title}-wf{workflow_id}"
+        custom_target_branch = context.get('target_branch')
+        if custom_target_branch:
+            branch_name = custom_target_branch
+        else:
+            import random
+            key_identifier = jira_key or (f"STORY-{story_id}" if story_id else "TASK")
+            random_digits = random.randint(10000000, 99999999)
+            branch_name = f"feat/{key_identifier}_{random_digits}"
 
         # ── Generate PR summary via LLM ───────────────────────────
         changes = developer_output.get('changes', [])
