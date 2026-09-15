@@ -49,7 +49,57 @@ def get_pull_request(pr_id):
     # Fetch previous QA reviews for this PR
     result['qa_reviews'] = [r.to_dict() for r in QAReview.query.filter_by(pr_id=pr_id).all()]
 
+    # Attach conversation summary from cached pr_summary field (live fetch available via /conversation endpoint)
+    result['conversation_summary'] = pr.pr_summary or ''
+
     return jsonify(result), 200
+
+
+@pull_requests_bp.route('/<int:pr_id>/conversation', methods=['GET'])
+@require_auth
+@require_role(['Engineering Lead', 'QA Reviewer', 'Admin'])
+def get_pr_conversation(pr_id):
+    """
+    Fetch the live GitHub PR conversation history:
+    - Issue comments (general discussion thread)
+    - PR reviews (APPROVED, CHANGES_REQUESTED, COMMENTED verdicts)
+    - Inline review comments on code
+    Returns a structured conversation_summary in Markdown plus raw arrays.
+    """
+    pr = PullRequest.query.get_or_404(pr_id)
+    story = Story.query.get(pr.story_id) if pr.story_id else None
+
+    # Determine repo URL from story's repository_details
+    repo_url = None
+    if story and story.repository_details:
+        details = story.repository_details
+        if isinstance(details, list) and details and isinstance(details[0], dict):
+            repo_url = details[0].get('url', '')
+
+    if not repo_url or not pr.pr_number:
+        return jsonify({
+            "conversation_summary": pr.pr_summary or "No GitHub conversation available.",
+            "issue_comments": [],
+            "reviews": [],
+            "review_comments": [],
+            "pr_number": pr.pr_number,
+            "note": "repo_url or pr_number missing — returning cached summary only"
+        }), 200
+
+    try:
+        from app.services.github_service import GitHubService
+        gh = GitHubService.from_app_config(repo_url=repo_url)
+        conversation = gh.get_pr_conversation(repo_url, pr.pr_number)
+        return jsonify(conversation), 200
+    except Exception as e:
+        logger.error(f"Failed to fetch GitHub PR conversation for PR {pr_id}: {e}")
+        return jsonify({
+            "error": f"Failed to fetch GitHub conversation: {str(e)}",
+            "conversation_summary": pr.pr_summary or "",
+            "pr_number": pr.pr_number
+        }), 500
+
+
 
 
 @pull_requests_bp.route('/<int:pr_id>/approve', methods=['POST'])
@@ -210,3 +260,74 @@ def _audit(workflow_id, story_id, user_id, event_type, event_data):
         db.session.commit()
     except Exception as e:
         logger.warning(f"Audit log failed: {e}")
+
+
+@pull_requests_bp.route('/<int:pr_id>/evidence', methods=['GET'])
+@require_auth
+@require_role(['Engineering Lead', 'QA Reviewer', 'Admin', 'Product Owner'])
+def get_pr_evidence(pr_id):
+    """
+    Return the full evidence report for a PR as JSON.
+    The report includes story context, changed files, validation results, QA reviews,
+    and workflow step summaries — all stored in the evidence_report column.
+
+    Query params:
+      ?format=json  (default) — returns the report as JSON
+      ?format=download — triggers a file download of the JSON report
+    """
+    pr = PullRequest.query.get_or_404(pr_id)
+    story = Story.query.get(pr.story_id) if pr.story_id else None
+    fmt = request.args.get('format', 'json').lower()
+
+    # If evidence is already stored, return it directly
+    if pr.evidence_report:
+        report = pr.evidence_report
+    else:
+        # Build evidence on-the-fly from related data
+        from app.models.workflow import Workflow, WorkflowStep
+        workflow = Workflow.query.get(pr.workflow_id)
+        steps = WorkflowStep.query.filter_by(workflow_id=pr.workflow_id).all() if workflow else []
+        qa_reviews = [r.to_dict() for r in QAReview.query.filter_by(pr_id=pr_id).all()]
+
+        report = {
+            "generated_by": "DEVAA Evidence Report",
+            "story": story.to_dict() if story else {},
+            "pull_request": {
+                "id": pr.id,
+                "pr_url": pr.pr_url,
+                "pr_number": pr.pr_number,
+                "branch_name": pr.branch_name,
+                "pr_status": pr.pr_status,
+                "pr_summary": pr.pr_summary,
+                "created_at": pr.created_at.isoformat() if pr.created_at else None,
+                "merged_at": pr.merged_at.isoformat() if pr.merged_at else None,
+            },
+            "changed_files": pr.changed_files or [],
+            "qa_reviews": qa_reviews,
+            "workflow_steps": [
+                {
+                    "step_type": s.step_type,
+                    "status": s.status,
+                    "agent_response": (s.agent_response or "")[:2000],
+                    "token_count": s.token_count,
+                    "cost_usd": float(s.cost_usd) if s.cost_usd else 0,
+                    "loop_iteration": s.loop_iteration,
+                    "guardrail_triggered": s.guardrail_triggered,
+                    "created_at": s.created_at.isoformat() if s.created_at else None,
+                }
+                for s in steps
+            ],
+            "workflow_status": workflow.status if workflow else None,
+        }
+
+    if fmt == 'download':
+        import json
+        from flask import make_response
+        filename = f"devaa_evidence_pr{pr_id}_{(story.title or 'report').replace(' ', '_')[:40]}.json"
+        response = make_response(json.dumps(report, indent=2, ensure_ascii=False))
+        response.headers['Content-Type'] = 'application/json'
+        response.headers['Content-Disposition'] = f'attachment; filename="{filename}"'
+        return response
+
+    return jsonify(report), 200
+

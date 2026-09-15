@@ -1,4 +1,5 @@
 import os
+import re
 import time
 from flask import Blueprint, request, jsonify, current_app
 from werkzeug.utils import secure_filename
@@ -139,7 +140,8 @@ def create_story():
                 sprint_id=sprint_id,
                 due_date=due_date,
                 story_points=story_points,
-                labels=labels
+                labels=labels,
+                repository_details=data.get('repository_details') if isinstance(data.get('repository_details'), list) else None
             )
 
             if jira_res and isinstance(jira_res, dict) and jira_res.get('external_id'):
@@ -577,4 +579,143 @@ def delete_story(story_id):
         "jira_deleted": jira_deleted,
         "story_id": story_id
     }), 200
+
+
+def _resolve_story_evidence(story):
+    """
+    Helper to locate or assemble the evidence Markdown and metadata for a story.
+    Returns: (evidence_md: str, filename: str, metadata: dict)
+    """
+    from app.models.devaa_models import PullRequest, QAReview
+    from app.models.workflow import Workflow, WorkflowStep
+    from app.utils.evidence_builder import EvidenceBuilder
+    from flask import current_app
+    import glob
+
+    jira_key = story.jira_story_key or story.external_task_id or f"STORY-{story.id}"
+    safe_key = re.sub(r'[^a-zA-Z0-9_-]', '_', jira_key)
+    safe_title = re.sub(r'[^a-zA-Z0-9_-]', '_', (story.title or 'task').replace(' ', '_'))[:30]
+
+    # 1. Look for existing local evidence file
+    proj_root = os.path.abspath(os.path.join(current_app.root_path, '..', '..'))
+    pattern = os.path.join(proj_root, f"evidence_{safe_key}*.md")
+    matching_files = glob.glob(pattern)
+    if matching_files:
+        try:
+            with open(matching_files[0], 'r', encoding='utf-8') as f:
+                content = f.read()
+            return content, os.path.basename(matching_files[0]), {"source": "disk", "path": matching_files[0]}
+        except Exception as e:
+            logger.warning(f"Failed to read disk evidence file {matching_files[0]}: {e}")
+
+    # 2. Look for PullRequest record
+    pr = PullRequest.query.filter_by(story_id=story.id).order_by(PullRequest.created_at.desc()).first()
+    workflow = Workflow.query.filter_by(story_id=story.id).order_by(Workflow.created_at.desc()).first()
+    wf_id = workflow.id if workflow else 1
+
+    pr_output = {
+        "pr_url": pr.pr_url if pr else "N/A",
+        "pr_number": pr.pr_number if pr else "",
+        "branch_name": pr.branch_name if pr else "main",
+        "pr_summary": pr.pr_summary if pr else "",
+    }
+
+    # Extract developer step changes if recorded
+    dev_step = None
+    if workflow:
+        dev_step = WorkflowStep.query.filter_by(workflow_id=workflow.id, step_type='Developer').order_by(WorkflowStep.id.desc()).first()
+
+    dev_output = {
+        "changes": [{"file": f, "action": "modified", "description": "Implemented by agent"} for f in (pr.changed_files if pr and pr.changed_files else [])],
+        "summary": (dev_step.agent_response[:500] if dev_step and dev_step.agent_response else (story.description or 'DEVAA Development Completed')),
+    }
+
+    evidence_md, filename = EvidenceBuilder.build(
+        story=story,
+        workflow_id=wf_id,
+        pr_output=pr_output,
+        developer_output=dev_output,
+        loop_count=workflow.loop_iteration if workflow else 1,
+    )
+    return evidence_md, filename, {"source": "generated", "workflow_id": wf_id}
+
+
+@stories_bp.route('/<int:story_id>/evidence', methods=['GET'])
+@require_auth
+@require_role(['Product Owner', 'Engineering Lead', 'QA Reviewer', 'Admin'])
+def get_story_evidence(story_id):
+    """
+    Fetch evidence report markdown and details for a story.
+    Enables instant in-modal preview on the PO Dashboard.
+    """
+    story = Story.query.get_or_404(story_id)
+    try:
+        evidence_md, filename, meta = _resolve_story_evidence(story)
+        jira_key = story.jira_story_key or story.external_task_id or f"STORY-{story.id}"
+
+        return jsonify({
+            "story_id": story.id,
+            "jira_key": jira_key,
+            "title": story.title,
+            "filename": filename,
+            "markdown": evidence_md,
+            "metadata": meta,
+        }), 200
+    except Exception as e:
+        logger.exception(f"Failed to fetch evidence for story {story_id}: {e}")
+        return jsonify({"error": f"Failed to fetch evidence: {str(e)}"}), 500
+
+
+@stories_bp.route('/<int:story_id>/evidence/download', methods=['GET'])
+@require_auth
+@require_role(['Product Owner', 'Engineering Lead', 'QA Reviewer', 'Admin'])
+def download_story_evidence(story_id):
+    """
+    Download the evidence report in PDF, Markdown, or JSON format.
+    Query parameter:
+      ?format=pdf  (default)
+      ?format=md
+      ?format=json
+    """
+    import json
+    from flask import make_response, send_file
+    story = Story.query.get_or_404(story_id)
+
+    fmt = request.args.get('format', 'pdf').lower()
+    evidence_md, filename, meta = _resolve_story_evidence(story)
+    base_name = os.path.splitext(filename)[0]
+
+    if fmt == 'pdf':
+        try:
+            from app.utils.pdf_generator import generate_evidence_pdf
+            pdf_bytes = generate_evidence_pdf(evidence_md, title=f"Evidence: {story.title}")
+            response = make_response(pdf_bytes)
+            response.headers['Content-Type'] = 'application/pdf'
+            response.headers['Content-Disposition'] = f'attachment; filename="{base_name}.pdf"'
+            return response
+        except Exception as e:
+            logger.exception(f"PDF generation failed for story {story_id}: {e}")
+            return jsonify({"error": f"PDF generation error: {str(e)}"}), 500
+
+    elif fmt == 'md':
+        response = make_response(evidence_md)
+        response.headers['Content-Type'] = 'text/markdown; charset=utf-8'
+        response.headers['Content-Disposition'] = f'attachment; filename="{base_name}.md"'
+        return response
+
+    elif fmt == 'json':
+        payload = {
+            "story_id": story.id,
+            "jira_key": story.jira_story_key or story.external_task_id,
+            "title": story.title,
+            "evidence_markdown": evidence_md,
+            "metadata": meta,
+        }
+        response = make_response(json.dumps(payload, indent=2))
+        response.headers['Content-Type'] = 'application/json'
+        response.headers['Content-Disposition'] = f'attachment; filename="{base_name}.json"'
+        return response
+
+    return jsonify({"error": f"Unsupported format '{fmt}'. Supported: pdf, md, json"}), 400
+
 

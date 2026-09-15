@@ -312,7 +312,8 @@ class JiraService:
         labels: list | str = None,
         target_status: str = None,
         start_date: str = None,
-        sprint_id: int | str = None
+        sprint_id: int | str = None,
+        repository_details: list = None
     ) -> dict | None:
         """
         Create a new issue in Jira Cloud.
@@ -329,18 +330,67 @@ class JiraService:
         proj_key = (project_key or current_app.config.get('JIRA_PROJECT_KEY') or 'SCRUM').strip()
         url = f"{cls._base().rstrip('/')}/rest/api/3/issue"
 
-        # Build ADF content for description + acceptance criteria
+        # Build ADF content — 3 dedicated sections: Description, Acceptance Criteria, Repository Details
         content_nodes = []
+
+        # Section 1: Description
         if description:
             content_nodes.append({
-                "type": "paragraph",
-                "content": [{"type": "text", "text": description}]
+                "type": "heading",
+                "attrs": {"level": 3},
+                "content": [{"type": "text", "text": "Description"}]
             })
+            for para in str(description).split('\n\n'):
+                para = para.strip()
+                if para:
+                    content_nodes.append({
+                        "type": "paragraph",
+                        "content": [{"type": "text", "text": para}]
+                    })
+
+        # Section 2: Acceptance Criteria
         if acceptance_criteria:
             content_nodes.append({
-                "type": "paragraph",
-                "content": [{"type": "text", "text": f"\nAcceptance Criteria:\n{acceptance_criteria}"}]
+                "type": "heading",
+                "attrs": {"level": 3},
+                "content": [{"type": "text", "text": "Acceptance Criteria"}]
             })
+            ac_lines = str(acceptance_criteria).split('\n')
+            for line in ac_lines:
+                line = line.strip().lstrip('-').lstrip('*').strip()
+                if line:
+                    content_nodes.append({
+                        "type": "paragraph",
+                        "content": [{"type": "text", "text": f"• {line}"}]
+                    })
+
+        # Section 3: Repository Details
+        repo_list = repository_details or []
+        if repo_list and isinstance(repo_list, list):
+            content_nodes.append({
+                "type": "heading",
+                "attrs": {"level": 3},
+                "content": [{"type": "text", "text": "Repository Details"}]
+            })
+            for repo in repo_list:
+                if not isinstance(repo, dict):
+                    continue
+                repo_name = repo.get('name') or repo.get('url', '').split('/')[-1].replace('.git', '') or 'Repository'
+                repo_url_val = repo.get('url', '')
+                repo_branch = repo.get('branch', 'main')
+                detail_lines = []
+                if repo_name:
+                    detail_lines.append(f"Name: {repo_name}")
+                if repo_url_val:
+                    detail_lines.append(f"URL: {repo_url_val}")
+                if repo_branch:
+                    detail_lines.append(f"Branch: {repo_branch}")
+                for detail_line in detail_lines:
+                    content_nodes.append({
+                        "type": "paragraph",
+                        "content": [{"type": "text", "text": detail_line}]
+                    })
+
         if not content_nodes:
             content_nodes.append({
                 "type": "paragraph",
@@ -357,6 +407,7 @@ class JiraService:
                 "content": content_nodes
             }
         }
+
 
         # Handle priority if provided
         if priority:

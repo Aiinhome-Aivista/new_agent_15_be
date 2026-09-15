@@ -125,6 +125,23 @@ class BranchPRAgent(BaseAgent):
             self.logger.error(err_msg)
             return AgentResult(success=False, error=err_msg)
 
+        # ── Build Evidence Report for DB storage ───────────────────────────
+        story_dict = story.to_dict() if hasattr(story, 'to_dict') else (story if isinstance(story, dict) else {})
+        evidence_report = {
+            "generated_by": "DEVAA Evidence Report",
+            "story": story_dict,
+            "pull_request": {
+                "pr_url": pr_url,
+                "pr_number": pr_number,
+                "branch_name": branch_name,
+                "pr_title": pr_meta.get('pr_title', ''),
+                "pr_description": pr_meta.get('pr_description', ''),
+                "pr_status": "open",
+            },
+            "changed_files": [c.get('file') for c in changes],
+            "workflow_id": workflow_id,
+        }
+
         # ── Persist Real PR to DB ──────────────────────────────────────
         pr = PullRequest(
             workflow_id=workflow_id,
@@ -135,6 +152,7 @@ class BranchPRAgent(BaseAgent):
             pr_status='open',
             pr_summary=pr_meta.get('pr_description', ''),
             changed_files=[c.get('file') for c in changes],
+            evidence_report=evidence_report,
             created_by=context.get('triggered_by_user_id')
         )
         self.db.session.add(pr)
@@ -152,6 +170,7 @@ class BranchPRAgent(BaseAgent):
                 "skipped": False
             }
         )
+
 
     def _create_github_pr(self, story, branch_name, pr_title, pr_body, github_token, base_branch, changes, workspace_dir=None):
         """

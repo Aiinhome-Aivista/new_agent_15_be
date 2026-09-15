@@ -23,6 +23,8 @@ Implementation Notes: {implementation_notes}
 
 {existing_code_section}
 
+{reference_section}
+
 {rework_section}
 
 INSTRUCTIONS:
@@ -30,6 +32,7 @@ INSTRUCTIONS:
 2. If modifying existing files from the repository context (such as 'app/routes/users.py' and 'tests/test_users.py'), retain their EXACT file paths, structure, imports, and existing functions while integrating the new logic.
 3. For every file being created or modified, provide the `full_content` field containing the COMPLETE, 100% PRODUCTION-READY source code for the entire file.
 4. Strictly fulfill every Acceptance Criterion (e.g. validate email format with regex, return consistent HTTP 400 JSON errors, and add real pytest test cases covering valid, invalid, missing, and trimmed email formats).
+5. ALWAYS update (or create) the target repository's README.md with a `## Changelog & Recent Updates` entry detailing the feature, new endpoints/components, and usage examples.
 
 Respond in this exact JSON format:
 {{
@@ -116,7 +119,33 @@ class DeveloperAgent(BaseAgent):
                     if fpath.endswith(('.py', '.js', '.ts', '.html', '.json')) and len(fcontent) < 4000:
                         existing_code_section += f"\n--- FILE: {fpath} ---\n{fcontent}\n"
 
+        # ── RAG Query for Reference Sources (Jira Attachments, Git Links, KB) ──
+        reference_section = ""
+        reference_collection_name = context.get('reference_collection')
+        story_id_val = story.id if hasattr(story, 'id') else (story.get('id') if isinstance(story, dict) else None)
+        if not reference_collection_name and story_id_val:
+            reference_collection_name = f"story_refs_{story_id_val}"
+        try:
+            if reference_collection_name:
+                from app.services.reference_source_service import ReferenceSourceService
+                ref_query = f"{title} {acceptance_criteria} {description}"[:500]
+                ref_results = ReferenceSourceService.query_references(
+                    story_id=story_id_val or 0,
+                    query=ref_query,
+                    n_results=5
+                )
+                if ref_results:
+                    reference_section = "\n## REFERENCE SOURCES (Jira Attachments, Git Links, Knowledge Base):\n"
+                    for ref in ref_results:
+                        src_type = ref.get('source_type', 'reference')
+                        fname = ref.get('filename', '')
+                        text = ref.get('text', '')
+                        reference_section += f"\n--- [{src_type.upper()}] {fname} ---\n{text[:1500]}\n"
+        except Exception as ref_err:
+            self.logger.warning(f"[DeveloperAgent] Reference source query failed (non-fatal): {ref_err}")
+
         prompt = DEVELOPER_PROMPT_TEMPLATE.format(
+
             title=title,
             description=description,
             acceptance_criteria=acceptance_criteria,
@@ -125,6 +154,7 @@ class DeveloperAgent(BaseAgent):
             patterns_found=str(impl_map.get('patterns_found', [])),
             implementation_notes=impl_map.get('implementation_notes', ''),
             existing_code_section=existing_code_section,
+            reference_section=reference_section,
             rework_section=rework_section
         )
 
@@ -170,7 +200,43 @@ class DeveloperAgent(BaseAgent):
                             with open(full_p, 'w', encoding='utf-8') as f:
                                 f.write(cnt)
             
+            # ── README.md Fail-Safe ────────────────────────────────────────────
+            # Guarantee that README.md is always updated, even if LLM omitted it
+            readme_in_changes = any(
+                'readme' in (c.get('file') or '').lower()
+                for c in changes
+            )
+            if not readme_in_changes and repo_dir and os.path.exists(repo_dir):
+                try:
+                    changelog_entry = (
+                        f"\n\n## Changelog & Recent Updates\n\n"
+                        f"### {title}\n\n"
+                        f"{description[:600] if description else 'No description provided.'}\n\n"
+                        f"**Acceptance Criteria:**\n{acceptance_criteria[:400] if acceptance_criteria else 'N/A'}\n"
+                    )
+                    readme_path = os.path.join(repo_dir, 'README.md')
+                    if os.path.exists(readme_path):
+                        with open(readme_path, 'r', encoding='utf-8', errors='replace') as f_in:
+                            existing_readme = f_in.read()
+                    else:
+                        existing_readme = f"# {title}\n"
+                    new_readme = existing_readme.rstrip() + changelog_entry
+                    with open(readme_path, 'w', encoding='utf-8') as f_out:
+                        f_out.write(new_readme)
+                    changes.append({
+                        "file": "README.md",
+                        "action": "modify",
+                        "description": f"Auto-generated changelog entry for: {title}",
+                        "code_snippet": changelog_entry,
+                        "full_content": new_readme,
+                        "satisfies_criteria": ["README documentation updated"]
+                    })
+                    self.logger.info(f"[DeveloperAgent] README.md auto-updated for story: {title}")
+                except Exception as readme_err:
+                    self.logger.warning(f"[DeveloperAgent] README.md update failed: {readme_err}")
+
             # Metric: pr_summary_matches_diff (semantic filename check)
+
             pr_summary_matches_diff = 0.0
             actual_files = [c.get('file') for c in changes if c.get('file')]
             if actual_files and summary:

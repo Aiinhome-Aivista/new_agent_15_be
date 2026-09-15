@@ -58,8 +58,11 @@ class BaseTaskProvider(ABC):
         sprint_id: int | str = None,
         due_date: str = None,
         story_points: float | int | str = None,
-        labels: list | str = None
+        labels: list | str = None,
+        repository_details: list = None,
+        **kwargs
     ) -> Optional[dict]:
+
         """
         Create a new external task. Returns task details dictionary with at least 'external_id' if successful.
         """

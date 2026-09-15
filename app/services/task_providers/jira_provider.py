@@ -270,8 +270,11 @@ class JiraTaskProvider(BaseTaskProvider):
         sprint_id: int | str = None,
         due_date: str = None,
         story_points: float | int | str = None,
-        labels: list | str = None
+        labels: list | str = None,
+        repository_details: list = None,
+        **kwargs
     ) -> Optional[dict]:
+
         from app.services.jira_service import JiraService
         result = JiraService.create_issue(
             title=title,
@@ -287,7 +290,8 @@ class JiraTaskProvider(BaseTaskProvider):
             labels=labels,
             target_status=target_status,
             start_date=start_date,
-            sprint_id=sprint_id
+            sprint_id=sprint_id,
+            repository_details=repository_details
         )
         if result and "key" in result:
             return {

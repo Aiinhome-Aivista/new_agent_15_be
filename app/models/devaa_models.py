@@ -15,6 +15,7 @@ class PullRequest(db.Model):
     pr_status = db.Column(db.String(50), default='open')  # open | merged | rejected | closed
     pr_summary = db.Column(db.Text, nullable=True)
     changed_files = db.Column(db.JSON, nullable=True)
+    evidence_report = db.Column(db.JSON, nullable=True)  # Full evidence package for API download
     created_by = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=True)
     merged_by = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=True)
     merged_at = db.Column(db.DateTime, nullable=True)
@@ -34,11 +35,13 @@ class PullRequest(db.Model):
             'pr_status': self.pr_status,
             'pr_summary': self.pr_summary,
             'changed_files': self.changed_files,
+            'has_evidence_report': bool(self.evidence_report),
             'created_by': self.created_by,
             'merged_by': self.merged_by,
             'merged_at': format_ist_iso(self.merged_at),
             'created_at': format_ist_iso(self.created_at),
         }
+
 
 
 class QAReview(db.Model):

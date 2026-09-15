@@ -1,0 +1,7 @@
+﻿{
+  "default_pat": "ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+  "repositories": {
+    "org/main-repo": "ghp_xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+    "https://github.com/org/service-repo.git": "ghp_yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+  }
+}

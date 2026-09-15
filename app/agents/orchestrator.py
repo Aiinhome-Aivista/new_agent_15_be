@@ -240,6 +240,33 @@ class Orchestrator:
                   message=f'📁 Isolated workspace allocated: `wf_{workflow_id}_{story_id or 0}`')
 
         # ═══════════════════════════════════════════════════════════
+        # STEP 1.5 — REFERENCE SOURCE INGESTION (Jira Attachments, Git Links, KB)
+        # Runs after intake passes, before RepoAnalysis, so references are available
+        # ═══════════════════════════════════════════════════════════
+        reference_collection = None
+        try:
+            from app.services.reference_source_service import ReferenceSourceService
+            log_event(story_id=story_id or 0, workflow_id=workflow_id,
+                      agent='ReferenceSource', level='info',
+                      message='📎 Fetching multi-modal references (Jira attachments, Git links, KB)')
+            ref_result = ReferenceSourceService.fetch_and_index_references(
+                story=context_story,
+                workflow_id=workflow_id
+            )
+            reference_collection = ref_result.get('collection_name')
+            src_count = len(ref_result.get('sources', []))
+            indexed_count = ref_result.get('indexed_count', 0)
+            log_event(story_id=story_id or 0, workflow_id=workflow_id,
+                      agent='ReferenceSource', level='success',
+                      message=f'✅ Reference ingestion complete — {src_count} source(s), {indexed_count} chunks indexed',
+                      detail=f'Collection: {reference_collection}')
+        except Exception as ref_err:
+            log_event(story_id=story_id or 0, workflow_id=workflow_id,
+                      agent='ReferenceSource', level='warning',
+                      message=f'⚠️ Reference ingestion failed (non-fatal): {ref_err}')
+            logger.warning(f"[Orchestrator] Reference source ingestion failed (non-fatal): {ref_err}")
+
+        # ═══════════════════════════════════════════════════════════
         # STEP 2 — REPOSITORY ANALYSIS
         # CHANGE C (part 1): qa_feedback injected into RepoAnalysis context
         # ═══════════════════════════════════════════════════════════
@@ -254,9 +281,11 @@ class Orchestrator:
                 'qa_feedback': qa_feedback,        # ← NEW: rework context for RAG re-focus
                 'workflow_id': workflow_id,
                 'workspace_dir': workspace_dir,
+                'reference_collection': reference_collection,   # ← NEW: story refs from attachments/git
             },
             workflow_id=workflow_id, step_record=step2
         )
+
         results['repo_analysis'] = repo_result.output
 
         if not repo_result.success:
@@ -301,7 +330,9 @@ class Orchestrator:
                 'loop_iteration': loop_count,
                 'workflow_id': workflow_id,
                 'workspace_dir': workspace_dir,
+                'reference_collection': reference_collection,   # ← NEW: multi-modal reference sources
             }, workflow_id=workflow_id, step_record=step_dev)
+
 
             if not dev_result.success:
                 log_event(story_id=story_id or 0, workflow_id=workflow_id,
@@ -462,20 +493,41 @@ class Orchestrator:
                       agent='BranchPR', level='success',
                       message=f'✅ PR raised: {pr_out.get("pr_url", "(url pending)")}',
                       detail=f'Branch: {pr_out.get("branch_name")}')
-            # Attach evidence.md to Jira issue
-            if jira_key and evidence_bytes:
-                try:
-                    from app.services.jira_service import JiraService
-                    JiraService.add_attachment(jira_key, evidence_filename, evidence_bytes, 'text/markdown')
+
+            # ── NOTE: Per DEVAA policy, Evidence is NOT attached to Jira (Jira attachments are strictly input references)
+            # Full evidence is stored in DEVAA DB and preserved locally for PO Dashboard download & view.
+            log_event(story_id=story_id or 0, workflow_id=workflow_id,
+                      agent='Orchestrator', level='info',
+                      message=f'📄 Evidence report `{evidence_filename}` stored locally & in DB for PO Dashboard (Jira attachment skipped per policy)')
+
+            # ── Point 6: Dispatch Pipeline Completion & Evidence Email ──
+            try:
+                from app.services.email_service import EmailService
+                changed_files_list = []
+                if isinstance(developer_output, dict):
+                    changed_files_list = [c.get('file') for c in developer_output.get('changes', []) if isinstance(c, dict)]
+                email_res = EmailService.send_pipeline_completion_email(
+                    story=context_story,
+                    pr_data={
+                        "pr_url": pr_out.get("pr_url"),
+                        "pr_number": pr_out.get("pr_number"),
+                        "branch_name": pr_out.get("branch_name"),
+                        "changed_files": changed_files_list,
+                    },
+                    evidence_md=evidence_md,
+                    workflow_id=workflow_id,
+                )
+                if email_res.get("sent"):
+                    recip_str = ", ".join(email_res.get("attempted_recipients", []))
                     log_event(story_id=story_id or 0, workflow_id=workflow_id,
-                              agent='Comment', level='jira',
-                              message=f'📎 Evidence report `{evidence_filename}` attached to Jira {jira_key}')
-                    logger.info(f"[Orchestrator] Evidence attached to Jira {jira_key}: {evidence_filename}")
-                except Exception as e:
+                              agent='Orchestrator', level='success',
+                              message=f'📧 Pipeline completion email delivered to: {recip_str}')
+                else:
                     log_event(story_id=story_id or 0, workflow_id=workflow_id,
-                              agent='Comment', level='warning',
-                              message=f'⚠️ Jira attachment failed (non-fatal): {e}')
-                    logger.warning(f"[Orchestrator] Jira attachment failed (non-fatal): {e}")
+                              agent='Orchestrator', level='info',
+                              message=f'📧 Pipeline completion notification logged (SMTP: {email_res.get("error", "simulated")})')
+            except Exception as mail_err:
+                logger.warning(f"[Orchestrator] Completion email notification failed (non-fatal): {mail_err}")
 
         except Exception as e:
             log_event(story_id=story_id or 0, workflow_id=workflow_id,
