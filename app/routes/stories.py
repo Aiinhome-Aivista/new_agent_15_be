@@ -504,3 +504,77 @@ def get_pipeline_logs(story_id):
             "current_agent": latest_wf.current_agent,
         } if latest_wf else None
     }), 200
+
+
+@stories_bp.route('/<int:story_id>', methods=['DELETE'])
+@require_auth
+@require_role(['Product Owner', 'Admin'])
+def delete_story(story_id):
+    """
+    Delete a story from DEVAA app database and linked Jira issue.
+    Product Owner / Admin only.
+    """
+    story = Story.query.get_or_404(story_id)
+    user = request.current_user
+    from app.models.role import Role
+    role = Role.query.get(user.role_id)
+
+    if story.owner_id != user.id and (role and role.name != 'Admin'):
+        return jsonify({"error": "You can only delete your own stories"}), 403
+
+    jira_key = story.jira_story_key or story.external_task_id
+    jira_deleted = False
+    jira_warning = None
+
+    # Delete issue from Jira if linked
+    if jira_key:
+        try:
+            jira_res = JiraService.delete_issue(jira_key)
+            if jira_res and jira_res.get('success'):
+                jira_deleted = True
+                logger.info(f"Successfully deleted Jira issue {jira_key} for story {story_id}")
+            else:
+                err_msg = jira_res.get('error') if isinstance(jira_res, dict) else 'Failed to delete Jira issue'
+                logger.warning(f"Jira deletion for {jira_key} returned warning: {err_msg}")
+                jira_warning = f"Jira issue deletion notice: {err_msg}"
+        except Exception as e:
+            logger.exception(f"Error deleting Jira issue {jira_key}: {e}")
+            jira_warning = f"Jira issue deletion exception: {str(e)}"
+
+    # Clean up DB relations referencing story_id before deleting story row
+    try:
+        from app.models.devaa_models import PipelineLog, AuditLog, GuardrailEvent, SuccessMetric, QAReview, PullRequest
+        from app.models.workflow import WorkflowStep
+
+        wf_ids = [w.id for w in Workflow.query.filter_by(story_id=story_id).all()]
+        if wf_ids:
+            WorkflowStep.query.filter(WorkflowStep.workflow_id.in_(wf_ids)).delete(synchronize_session=False)
+
+        PipelineLog.query.filter_by(story_id=story_id).delete(synchronize_session=False)
+        AuditLog.query.filter_by(story_id=story_id).delete(synchronize_session=False)
+        GuardrailEvent.query.filter_by(story_id=story_id).delete(synchronize_session=False)
+        SuccessMetric.query.filter_by(story_id=story_id).delete(synchronize_session=False)
+        QAReview.query.filter_by(story_id=story_id).delete(synchronize_session=False)
+        PullRequest.query.filter_by(story_id=story_id).delete(synchronize_session=False)
+        Workflow.query.filter_by(story_id=story_id).delete(synchronize_session=False)
+
+        db.session.delete(story)
+        db.session.commit()
+    except Exception as db_err:
+        db.session.rollback()
+        logger.exception(f"Database error while deleting story {story_id}: {db_err}")
+        return jsonify({"error": f"Failed to delete story from database: {str(db_err)}"}), 500
+
+    msg = f"Story '{story.title}' deleted successfully from app."
+    if jira_key:
+        if jira_deleted:
+            msg += f" Jira issue {jira_key} was also deleted."
+        elif jira_warning:
+            msg += f" ({jira_warning})"
+
+    return jsonify({
+        "message": msg,
+        "jira_deleted": jira_deleted,
+        "story_id": story_id
+    }), 200
+

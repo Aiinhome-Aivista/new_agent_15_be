@@ -72,4 +72,12 @@ class BaseTaskProvider(ABC):
         """
         pass
 
+    @abstractmethod
+    def delete_task(self, task_id: str) -> bool:
+        """
+        Delete an external task.
+        """
+        pass
+
+
 

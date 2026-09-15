@@ -634,14 +634,43 @@ class JiraService:
         if not cls._is_configured():
             return []
         jql = f'project = "{project_key}" AND status = "{status}" ORDER BY created DESC'
-        url = f"{cls._base()}/rest/api/3/search"
-        resp = requests.get(url, auth=cls._auth(),
-                            params={"jql": jql, "maxResults": 50},
-                            headers={"Accept": "application/json"})
+        url = f"{cls._base().rstrip('/')}/rest/api/3/search/jql"
+        resp = requests.post(url, auth=cls._auth(),
+                             json={"jql": jql, "maxResults": 50},
+                             headers={"Accept": "application/json", "Content-Type": "application/json"})
         if resp.status_code == 200:
             return resp.json().get('issues', [])
         logger.error(f"Jira search failed: {resp.status_code} {resp.text}")
         return []
+
+    @classmethod
+    def delete_issue(cls, issue_key: str) -> dict:
+        """
+        Delete an issue from Jira Cloud REST API v3.
+        Returns dict with success: True or error message.
+        """
+        if not cls._is_configured() or not issue_key:
+            return {"error": "Jira not configured or missing issue key"}
+
+        url = f"{cls._base().rstrip('/')}/rest/api/3/issue/{issue_key}"
+        try:
+            resp = requests.delete(
+                url,
+                auth=cls._auth(),
+                params={"deleteSubtasks": "true"},
+                headers={"Accept": "application/json"}
+            )
+            if resp.status_code in [200, 204]:
+                logger.info(f"Successfully deleted Jira issue {issue_key}")
+                return {"success": True, "key": issue_key}
+            else:
+                err_text = resp.text
+                logger.warning(f"Failed to delete Jira issue {issue_key}: {resp.status_code} {err_text}")
+                return {"error": f"Jira returned HTTP {resp.status_code}: {err_text}"}
+        except Exception as e:
+            logger.exception(f"Exception deleting Jira issue {issue_key}: {e}")
+            return {"error": str(e)}
+
 
 
 
