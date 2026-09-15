@@ -142,10 +142,6 @@ class SyncService:
                 }
                 if task.due_date:
                     repo_info["due_date"] = task.due_date
-                if task.story_points is not None:
-                    repo_info["story_points"] = task.story_points
-                if extracted_target_branch:
-                    repo_info["target_branch"] = extracted_target_branch
 
                 # Map external task status to DEVAA status
                 ext_status = (task.status or 'TO-DO').upper().replace(' ', '-')

@@ -1,5 +1,6 @@
 from app import db
 from datetime import datetime
+from app.utils.time_utils import get_ist_now, format_ist_iso
 
 
 class Story(db.Model):
@@ -18,8 +19,8 @@ class Story(db.Model):
     owner_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
     status = db.Column(db.String(50), default='TO-DO')  # TO-DO | IN-PROGRESS | QA-TESTING | DONE | INVALID
     jira_comment_id = db.Column(db.String(100), nullable=True)
-    created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_at = db.Column(db.DateTime, default=get_ist_now)
+    updated_at = db.Column(db.DateTime, default=get_ist_now, onupdate=get_ist_now)
 
     # Relationships
     owner = db.relationship('User', foreign_keys=[owner_id], backref='owned_stories')
@@ -63,6 +64,7 @@ class Story(db.Model):
             'assignee_id': self.assignee_id,
             'owner_id': self.owner_id,
             'status': self.status,
-            'created_at': self.created_at.isoformat() if self.created_at else None,
+            'created_at': format_ist_iso(self.created_at),
         }
+
 

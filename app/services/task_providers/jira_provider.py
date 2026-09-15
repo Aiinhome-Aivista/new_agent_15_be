@@ -302,4 +302,10 @@ class JiraTaskProvider(BaseTaskProvider):
         from app.services.jira_service import JiraService
         return JiraService.add_attachment(task_id, filename, file_data, mime_type)
 
+    def delete_task(self, task_id: str) -> bool:
+        from app.services.jira_service import JiraService
+        res = JiraService.delete_issue(task_id)
+        return bool(res and res.get('success'))
+
+
 
