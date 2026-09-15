@@ -12,6 +12,7 @@ class TaskModel:
     priority: Optional[str] = None
     status: str = 'TO-DO'
     due_date: Optional[str] = None
+    story_points: Optional[object] = None
 
 
 class BaseTaskProvider(ABC):

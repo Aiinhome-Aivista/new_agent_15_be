@@ -97,8 +97,14 @@ class SyncService:
                     if details and isinstance(details[0], dict):
                         first_det = details[0]
                         det_updated = False
-                        if not first_det.get('priority') and task_prio:
+                        if task_prio and first_det.get('priority') != task_prio:
                             first_det['priority'] = task_prio
+                            det_updated = True
+                        if task.assignee_email and first_det.get('external_assignee') != task.assignee_email:
+                            first_det['external_assignee'] = task.assignee_email
+                            det_updated = True
+                        if task.story_points is not None and first_det.get('story_points') != task.story_points:
+                            first_det['story_points'] = task.story_points
                             det_updated = True
                         if task.due_date and first_det.get('due_date') != task.due_date:
                             first_det['due_date'] = task.due_date

@@ -90,7 +90,7 @@ class JiraTaskProvider(BaseTaskProvider):
             "Accept": "application/json",
             "Content-Type": "application/json"
         }
-        fields = ["summary", "description", "status", "priority", "assignee", "key", "duedate"]
+        fields = ["summary", "description", "status", "priority", "assignee", "key", "duedate", "customfield_10016", "customfield_10026", "customfield_10028"]
         
         try:
             payload = {
@@ -150,6 +150,16 @@ class JiraTaskProvider(BaseTaskProvider):
                     due_date_raw = fields_data.get('duedate')
                     due_date = str(due_date_raw).strip() if due_date_raw else None
 
+                    story_points = None
+                    for sp_field in ["customfield_10016", "customfield_10026", "customfield_10028"]:
+                        val = fields_data.get(sp_field)
+                        if val is not None and str(val).strip():
+                            try:
+                                story_points = int(val) if float(val).is_integer() else float(val)
+                            except (ValueError, TypeError):
+                                story_points = val
+                            break
+
                     title = fields_data.get('summary') or f"Task {issue_key}"
 
                     tasks.append(TaskModel(
@@ -160,7 +170,8 @@ class JiraTaskProvider(BaseTaskProvider):
                         assignee_email=actual_assignee,
                         priority=priority_name,
                         status=status_name,
-                        due_date=due_date
+                        due_date=due_date,
+                        story_points=story_points
                     ))
                 logger.info(f"Successfully fetched {len(tasks)} issues from Jira using /rest/api/3/search/jql.")
                 return tasks
