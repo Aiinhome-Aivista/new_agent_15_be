@@ -36,13 +36,8 @@ class Story(db.Model):
         details = self.repository_details or [{}]
         first_det = details[0] if isinstance(details, list) and len(details) > 0 and isinstance(details[0], dict) else {}
         is_created_in_devaa = bool(
-            first_det.get('created_in_devaa') or
+            first_det.get('created_in_devaa') is True or
             first_det.get('origin') == 'devaa' or
-            first_det.get('priority') or
-            first_det.get('labels') or
-            first_det.get('attachments') or
-            first_det.get('story_points') or
-            first_det.get('start_date') or
             self.external_provider == 'manual'
         )
         # Check if story has any QA rejection
