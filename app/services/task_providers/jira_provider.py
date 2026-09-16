@@ -30,14 +30,40 @@ class JiraTaskProvider(BaseTaskProvider):
             return ""
         if isinstance(adf_node, str):
             return adf_node
-        if isinstance(adf_node, dict):
-            text = adf_node.get('text', '')
-            content = adf_node.get('content', [])
-            inner_text = " ".join(self._extract_adf_text(child) for child in content if child).strip()
-            return f"{text} {inner_text}".strip()
         if isinstance(adf_node, list):
-            return " ".join(self._extract_adf_text(item) for item in adf_node if item).strip()
+            return "".join(self._extract_adf_text(item) for item in adf_node)
+        if isinstance(adf_node, dict):
+            node_type = adf_node.get('type', '')
+            content = adf_node.get('content', [])
+
+            if node_type == 'text':
+                return adf_node.get('text', '')
+            elif node_type == 'hardBreak':
+                return '\n'
+            elif node_type == 'mention':
+                return adf_node.get('attrs', {}).get('text', '') or '@user'
+            elif node_type in ('inlineCard', 'blockCard'):
+                return adf_node.get('attrs', {}).get('url', '')
+
+            inner = ''.join(self._extract_adf_text(c) for c in content)
+
+            if node_type == 'paragraph':
+                return inner + '\n\n'
+            elif node_type == 'heading':
+                return inner.strip() + '\n\n'
+            elif node_type in ('bulletList', 'orderedList'):
+                return inner + '\n'
+            elif node_type == 'listItem':
+                return '• ' + inner.strip() + '\n'
+            elif node_type == 'codeBlock':
+                return '```\n' + inner + '\n```\n\n'
+            elif node_type == 'blockquote':
+                return '> ' + inner.strip() + '\n\n'
+            elif node_type == 'rule':
+                return '\n---\n\n'
+            return inner
         return ""
+
 
     def _build_jql(self, min_priority: str = "all", status: str = "To Do", project_key: Optional[str] = None) -> str:
         conditions = []

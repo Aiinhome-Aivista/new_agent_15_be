@@ -60,33 +60,45 @@ class SyncService:
                 # Extract acceptance criteria if present in description
                 task_ac = (task.acceptance_criteria or "").strip()
                 task_title = (task.title or "").strip()
-                task_desc = (task.description or "").strip()
+                raw_desc = (task.description or "").strip()
+                task_desc = raw_desc
                 task_prio = task.priority or "Medium"
 
-                if not task_ac and task_desc:
-                    ac_match = re.search(
-                        r'(?:Acceptance Criteria|ACs?)\s*[:\n\-]+(.*?)(?=(?:\n\s*(?:Technical Constraints|Constraints|Expected Outcome|Notes|Expected Output)|$))',
-                        task_desc,
-                        re.IGNORECASE | re.DOTALL
-                    )
-                    if not ac_match:
-                        ac_match = re.search(r'((?:AC\d+|AC\s*\d+)[\s\S]*)', task_desc, re.IGNORECASE)
-                    if ac_match:
-                        task_ac = ac_match.group(1).strip()
+                if raw_desc:
+                    ac_header = re.search(r'(?:^|\n)\s*(?:h\d+\.\s*)?(?:Acceptance Criteria|Acceptance Criterion|ACs?)\s*[:\n\-]+', raw_desc, re.IGNORECASE)
+                    if ac_header:
+                        clean_desc = raw_desc[:ac_header.start()].strip()
+                        extracted_ac = raw_desc[ac_header.end():].strip()
+                        if not task_ac:
+                            task_ac = extracted_ac
+                        if clean_desc:
+                            task_desc = clean_desc
+                    else:
+                        ac_direct = re.search(r'(?:^|\n)\s*((?:AC\d+|AC\s*\d+)[\s\S]*)', raw_desc, re.IGNORECASE)
+                        if ac_direct:
+                            clean_desc = raw_desc[:ac_direct.start()].strip()
+                            extracted_ac = ac_direct.group(1).strip()
+                            if not task_ac:
+                                task_ac = extracted_ac
+                            if clean_desc:
+                                task_desc = clean_desc
 
                 if task_title and (task_title.lower().startswith('task ') or task_title.lower().startswith('scrum-')):
-                    t_match = re.search(r'(?:^|\n)\s*Title\s*:\s*([^\n\r]+)', task_desc, re.IGNORECASE)
+                    t_match = re.search(r'(?:^|\n)\s*Title\s*:\s*([^\n\r]+)', raw_desc, re.IGNORECASE)
                     if t_match and t_match.group(1).strip():
                         task_title = t_match.group(1).strip()
 
 
                 if existing:
-                    # Update any missing fields on existing story
+                    # Update any missing or updated fields on existing story
                     updated = False
                     if not existing.source_branch:
                         existing.source_branch = default_base_branch
                         updated = True
-                    if not existing.acceptance_criteria and task_ac:
+                    if task_desc and (not existing.description or existing.description != task_desc):
+                        existing.description = task_desc
+                        updated = True
+                    if task_ac and (not existing.acceptance_criteria or existing.acceptance_criteria != task_ac):
                         existing.acceptance_criteria = task_ac
                         updated = True
                     if (existing.title.lower().startswith('task ') or existing.title.lower().startswith('scrum-')) and task_title != existing.title:

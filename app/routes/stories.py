@@ -56,6 +56,41 @@ def list_stories():
 def get_story(story_id):
     story = Story.query.get_or_404(story_id)
 
+    # Auto-heal missing description or AC if linked to Jira
+    if (not story.description or not story.acceptance_criteria) and story.jira_story_key:
+        try:
+            issue = JiraService.get_issue(story.jira_story_key)
+            if issue:
+                desc_adf = issue.get('fields', {}).get('description')
+                if desc_adf:
+                    provider = TaskProviderFactory.get_provider()
+                    if provider and hasattr(provider, '_extract_adf_text'):
+                        raw_desc = provider._extract_adf_text(desc_adf).strip()
+                        if raw_desc:
+                            clean_desc = raw_desc
+                            extracted_ac = ''
+                            ac_header = re.search(r'(?:^|\n)\s*(?:h\d+\.\s*)?(?:Acceptance Criteria|Acceptance Criterion|ACs?)\s*[:\n\-]+', raw_desc, re.IGNORECASE)
+                            if ac_header:
+                                clean_desc = raw_desc[:ac_header.start()].strip()
+                                extracted_ac = raw_desc[ac_header.end():].strip()
+                            else:
+                                ac_direct = re.search(r'(?:^|\n)\s*((?:AC\d+|AC\s*\d+)[\s\S]*)', raw_desc, re.IGNORECASE)
+                                if ac_direct:
+                                    clean_desc = raw_desc[:ac_direct.start()].strip()
+                                    extracted_ac = ac_direct.group(1).strip()
+                            
+                            updated = False
+                            if clean_desc and not story.description:
+                                story.description = clean_desc
+                                updated = True
+                            if extracted_ac and not story.acceptance_criteria:
+                                story.acceptance_criteria = extracted_ac
+                                updated = True
+                            if updated:
+                                db.session.commit()
+        except Exception as heal_err:
+            logger.warning(f"Failed to auto-heal story {story.id} from Jira: {heal_err}")
+
     # Fetch associated workflows
     workflows = Workflow.query.filter_by(story_id=story_id).order_by(Workflow.created_at.desc()).all()
 
