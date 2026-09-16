@@ -106,10 +106,11 @@ class Config:
     EMBEDDING_MODEL_VERSION = os.getenv("EMBEDDING_MODEL_VERSION", "v1.0")
 
     # ── SMTP Email Notifications ───────────────────────────────
-    SMTP_HOST = os.getenv("SMTP_HOST", "")
+    SMTP_HOST = os.getenv("SMTP_HOST") or os.getenv("SMTP_SERVER", "")
     SMTP_PORT = int(os.getenv("SMTP_PORT", 587))
-    SMTP_USER = os.getenv("SMTP_USER", "")
+    SMTP_USER = os.getenv("SMTP_USER") or os.getenv("SMTP_EMAIL", "")
     SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
-    SMTP_FROM_EMAIL = os.getenv("SMTP_FROM_EMAIL", os.getenv("SMTP_USER", "noreply@devaa.ai"))
+    SMTP_FROM_EMAIL = os.getenv("SMTP_FROM_EMAIL") or os.getenv("SMTP_EMAIL") or os.getenv("SMTP_USER", "noreply@devaa.ai")
     SMTP_USE_TLS = os.getenv("SMTP_USE_TLS", "true").lower() == "true"
+
 

@@ -24,9 +24,9 @@ class EmailService:
             from app.config.settings import Config
             cfg = Config.__dict__
 
-        host = cfg.get("SMTP_HOST") or os.getenv("SMTP_HOST", "")
+        host = cfg.get("SMTP_HOST") or os.getenv("SMTP_HOST") or cfg.get("SMTP_SERVER") or os.getenv("SMTP_SERVER", "")
         port = int(cfg.get("SMTP_PORT") or os.getenv("SMTP_PORT", 587))
-        user = cfg.get("SMTP_USER") or os.getenv("SMTP_USER", "")
+        user = cfg.get("SMTP_USER") or os.getenv("SMTP_USER") or cfg.get("SMTP_EMAIL") or os.getenv("SMTP_EMAIL", "")
         password = cfg.get("SMTP_PASSWORD") or os.getenv("SMTP_PASSWORD", "")
         from_email = cfg.get("SMTP_FROM_EMAIL") or os.getenv("SMTP_FROM_EMAIL") or user or "noreply@devaa.ai"
         use_tls = str(cfg.get("SMTP_USE_TLS", os.getenv("SMTP_USE_TLS", "true"))).lower() == "true"
