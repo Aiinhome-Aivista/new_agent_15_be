@@ -608,9 +608,19 @@ def _resolve_story_evidence(story):
         except Exception as e:
             logger.warning(f"Failed to read disk evidence file {matching_files[0]}: {e}")
 
-    # 2. Look for PullRequest record
-    pr = PullRequest.query.filter_by(story_id=story.id).order_by(PullRequest.created_at.desc()).first()
-    workflow = Workflow.query.filter_by(story_id=story.id).order_by(Workflow.created_at.desc()).first()
+    # 2. Look for PullRequest record safely
+    pr = None
+    try:
+        pr = PullRequest.query.filter_by(story_id=story.id).order_by(PullRequest.created_at.desc()).first()
+    except Exception as pr_err:
+        logger.warning(f"Could not query PullRequest for story {story.id}: {pr_err}")
+
+    workflow = None
+    try:
+        workflow = Workflow.query.filter_by(story_id=story.id).order_by(Workflow.created_at.desc()).first()
+    except Exception as wf_err:
+        logger.warning(f"Could not query Workflow for story {story.id}: {wf_err}")
+
     wf_id = workflow.id if workflow else 1
 
     pr_output = {

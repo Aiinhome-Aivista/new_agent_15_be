@@ -10,14 +10,19 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 
 from app import create_app, db
 
+from sqlalchemy import text
+
 app = create_app()
 
 with app.app_context():
     try:
-        db.engine.execute("ALTER TABLE pull_requests ADD COLUMN evidence_report JSON NULL")
+        with db.engine.connect() as conn:
+            conn.execute(text("ALTER TABLE pull_requests ADD COLUMN evidence_report JSON NULL"))
+            conn.commit()
         print("Migration successful: evidence_report column added to pull_requests.")
     except Exception as e:
-        if "duplicate column name" in str(e).lower() or "already exists" in str(e).lower():
+        if "duplicate column" in str(e).lower() or "already exists" in str(e).lower():
             print("Column evidence_report already exists — migration skipped.")
         else:
             print(f"Migration error: {e}")
+

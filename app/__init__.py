@@ -33,6 +33,16 @@ def create_app(config_class=Config):
     app.register_blueprint(admin_bp, url_prefix='/api/admin')
     app.register_blueprint(connectors_bp, url_prefix='/api/connectors')
 
+    # Ensure schema migrations like evidence_report column exist
+    with app.app_context():
+        try:
+            from sqlalchemy import text
+            with db.engine.connect() as conn:
+                conn.execute(text("ALTER TABLE pull_requests ADD COLUMN evidence_report JSON NULL"))
+                conn.commit()
+        except Exception:
+            pass
+
     @app.route('/health')
     def health_check():
         return {"status": "healthy", "service": app.config["PROJECT_NAME"]}
