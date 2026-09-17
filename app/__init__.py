@@ -18,7 +18,7 @@ def create_app(config_class=Config):
 
     # Register blueprints
     from app.routes.auth import auth_bp
-    from app.routes.workflows import workflows_bp
+    # from app.routes.workflows import workflows_bp  # Standalone workflows disabled
     from app.routes.stories import stories_bp
     from app.routes.pull_requests import pull_requests_bp
     from app.routes.qa import qa_bp
@@ -26,7 +26,7 @@ def create_app(config_class=Config):
     from app.routes.connectors import connectors_bp
 
     app.register_blueprint(auth_bp, url_prefix='/api/auth')
-    app.register_blueprint(workflows_bp, url_prefix='/api/workflows')
+    # app.register_blueprint(workflows_bp, url_prefix='/api/workflows')  # Standalone workflows disabled
     app.register_blueprint(stories_bp, url_prefix='/api/stories')
     app.register_blueprint(pull_requests_bp, url_prefix='/api/pull-requests')
     app.register_blueprint(qa_bp, url_prefix='/api/qa')
