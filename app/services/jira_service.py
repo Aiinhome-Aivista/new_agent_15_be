@@ -90,28 +90,79 @@ class JiraService:
             logger.warning("Jira not configured. Status transition skipped.")
             return False
 
-        # Get available transitions
+        if not target_status or not jira_key:
+            return False
+
+        import re
+        def _norm(s: str) -> str:
+            return re.sub(r'[\s\-_]+', '', (s or '').lower())
+
+        target_norm = _norm(target_status)
+
+        # Build prioritized list of candidate status names to match in Jira
+        candidates = []
+        todo_cfg = current_app.config.get('JIRA_STATUS_TODO', 'To Do')
+        in_progress_cfg = current_app.config.get('JIRA_STATUS_IN_PROGRESS', 'In Progress')
+        qa_cfg = current_app.config.get('JIRA_STATUS_QA_TESTING', 'QA Testing')
+        done_cfg = current_app.config.get('JIRA_STATUS_DONE', 'Done')
+
+        if target_norm in ('todo', 'open', 'backlog', 'reopen'):
+            candidates = [todo_cfg, 'To Do', 'TODO', 'Open', 'Backlog']
+        elif target_norm in ('inprogress', 'inprog', 'development', 'indev', 'running'):
+            candidates = [in_progress_cfg, 'In Progress', 'In Dev', 'Development']
+        elif target_norm in ('qatesting', 'qa', 'inreview', 'review', 'testing', 'awaitingqa'):
+            # First look for QA/Review status; if the Jira project doesn't have QA status, fall back to In Progress
+            candidates = [qa_cfg, 'QA Testing', 'QA', 'In Review', 'Review', 'Testing', in_progress_cfg, 'In Progress']
+        elif target_norm in ('done', 'completed', 'resolved', 'closed'):
+            candidates = [done_cfg, 'Done', 'Completed', 'Resolved', 'Closed']
+        else:
+            candidates = [target_status]
+
+        # Get available transitions from Jira
         url = f"{cls._base()}/rest/api/3/issue/{jira_key}/transitions"
         resp = requests.get(url, auth=cls._auth(), headers={"Accept": "application/json"})
         if resp.status_code != 200:
+            logger.error(f"Failed to fetch Jira transitions for {jira_key}: {resp.status_code} {resp.text}")
             return False
 
         transitions = resp.json().get('transitions', [])
         transition_id = None
-        for t in transitions:
-            if t['name'].lower() == target_status.lower():
-                transition_id = t['id']
+        matched_name = None
+
+        for cand in candidates:
+            cand_norm = _norm(cand)
+            for t in transitions:
+                t_name_norm = _norm(t.get('name'))
+                to_name_norm = _norm(t.get('to', {}).get('name'))
+                if cand_norm in (t_name_norm, to_name_norm):
+                    transition_id = t.get('id')
+                    matched_name = t.get('name')
+                    break
+            if transition_id:
                 break
 
         if not transition_id:
-            logger.error(f"No Jira transition found for status '{target_status}'")
+            # Check if the issue is already in the target status category
+            issue = cls.get_issue(jira_key)
+            if issue:
+                current_st = issue.get('fields', {}).get('status', {}).get('name', '')
+                if _norm(current_st) in [_norm(c) for c in candidates]:
+                    logger.info(f"Jira issue {jira_key} is already in state '{current_st}' (matches candidate for '{target_status}').")
+                    return True
+            logger.warning(f"No Jira transition found for status '{target_status}' on issue {jira_key}. Available: {[t.get('name') for t in transitions]}")
             return False
 
         # Execute transition
         resp2 = requests.post(url, json={"transition": {"id": transition_id}},
                               auth=cls._auth(),
                               headers={"Content-Type": "application/json"})
-        return resp2.status_code == 204
+        if resp2.status_code == 204:
+            logger.info(f"Successfully transitioned Jira issue {jira_key} to '{matched_name}' (target: '{target_status}')")
+            return True
+        else:
+            logger.error(f"Jira transition execution failed: {resp2.status_code} {resp2.text}")
+            return False
+
 
     @classmethod
     def add_attachment(cls, jira_key: str, filename: str, content: bytes, mime_type: str = 'text/markdown') -> bool:
