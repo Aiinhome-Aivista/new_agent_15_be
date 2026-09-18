@@ -166,6 +166,73 @@ class GitHubService:
             logger.error(f"Exception updating PR description: {e}")
         return False
 
+    def merge_pr(
+        self,
+        repo_url: str,
+        pr_number: int,
+        commit_title: str = None,
+        commit_message: str = None,
+        merge_method: str = "squash"
+    ) -> dict:
+        """
+        Merge a pull request on GitHub via the REST API.
+        PUT /repos/{owner}/{repo}/pulls/{pull_number}/merge
+        merge_method can be 'merge', 'squash', or 'rebase'. Defaults to 'squash'.
+        Returns dict with keys: 'merged' (bool), 'sha' (str), 'message' (str), 'error' (str, optional)
+        """
+        org, repo_name = self._parse_repo(repo_url)
+        if not org or not repo_name:
+            err = f"Could not parse org/repo from URL: {repo_url}"
+            logger.error(err)
+            return {"merged": False, "error": err}
+
+        url = f"https://api.github.com/repos/{org}/{repo_name}/pulls/{pr_number}/merge"
+        payload = {"merge_method": merge_method}
+        if commit_title:
+            payload["commit_title"] = commit_title
+        if commit_message:
+            payload["commit_message"] = commit_message
+
+        try:
+            resp = requests.put(url, json=payload, headers=self._headers, timeout=20)
+            if resp.status_code == 200:
+                data = resp.json()
+                logger.info(f"Successfully merged GitHub PR #{pr_number} on {org}/{repo_name} (method={merge_method})")
+                return {
+                    "merged": True,
+                    "sha": data.get("sha"),
+                    "message": data.get("message", "Pull Request successfully merged")
+                }
+            elif resp.status_code == 405:
+                # If squash wasn't allowed or failed, try standard 'merge' method
+                if merge_method != "merge":
+                    logger.info(f"Retrying merge with method='merge' for PR #{pr_number}...")
+                    payload["merge_method"] = "merge"
+                    resp_retry = requests.put(url, json=payload, headers=self._headers, timeout=20)
+                    if resp_retry.status_code == 200:
+                        data = resp_retry.json()
+                        logger.info(f"Successfully merged GitHub PR #{pr_number} with fallback merge method")
+                        return {
+                            "merged": True,
+                            "sha": data.get("sha"),
+                            "message": data.get("message", "Pull Request successfully merged")
+                        }
+                err = f"PR #{pr_number} cannot be merged (405): {resp.text}"
+                logger.warning(err)
+                return {"merged": False, "error": "Pull request is not mergeable or already merged", "status_code": 405}
+            elif resp.status_code == 409:
+                err = f"PR #{pr_number} has merge conflicts (409): {resp.text}"
+                logger.warning(err)
+                return {"merged": False, "error": "Merge conflict. Head branch was modified or conflicts exist.", "status_code": 409}
+            else:
+                err = f"GitHub merge failed ({resp.status_code}): {resp.text}"
+                logger.error(err)
+                return {"merged": False, "error": err, "status_code": resp.status_code}
+        except Exception as e:
+            logger.exception(f"Exception during GitHub PR merge: {e}")
+            return {"merged": False, "error": str(e)}
+
+
     def _fetch_all(self, url: str, per_page: int = 100) -> list:
         """Paginate through all results for a GitHub API endpoint."""
         results = []

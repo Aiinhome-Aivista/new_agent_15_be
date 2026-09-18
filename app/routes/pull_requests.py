@@ -120,11 +120,39 @@ def approve_pr(pr_id):
     comments = data.get('comments', '')
 
     # Update PR status
+    github_merge_result = None
+    if pr.pr_number:
+        try:
+            from app.services.github_service import GitHubService
+            from flask import current_app
+            repo_url = pr.pr_url.split('/pull/')[0] if (pr.pr_url and '/pull/' in pr.pr_url) else current_app.config.get('GITHUB_BASE_URL', '')
+            gh_service = GitHubService.from_app_config(repo_url)
+            story = Story.query.get(pr.story_id) if pr.story_id else None
+            story_title = story.title if story else f"PR #{pr.pr_number}"
+            jira_key = story.jira_story_key if story else ""
+            commit_title = f"feat({jira_key or f'PR-{pr.pr_number}'}): {story_title} (PR #{pr.pr_number})"
+            commit_msg = f"Approved by QA Reviewer #{request.current_user.id}.\nDEVAA Automated Implementation."
+            github_merge_result = gh_service.merge_pr(
+                repo_url=repo_url,
+                pr_number=pr.pr_number,
+                commit_title=commit_title,
+                commit_message=commit_msg,
+                merge_method="squash"
+            )
+            if github_merge_result.get("merged"):
+                logger.info(f"[PR] Successfully merged PR #{pr.pr_number} into target base branch on GitHub.")
+            else:
+                logger.warning(f"[PR] GitHub merge was not completed: {github_merge_result.get('error')}")
+        except Exception as gh_err:
+            logger.error(f"[PR] Error calling GitHub merge API: {gh_err}")
+            github_merge_result = {"merged": False, "error": str(gh_err)}
+
     pr.pr_status = 'merged'
     pr.merged_by = request.current_user.id
     from datetime import datetime
     pr.merged_at = datetime.utcnow()
     db.session.commit()
+
 
     # Log QA review
     review = QAReview(

@@ -187,8 +187,11 @@ class Orchestrator:
         import random
         base_branch = config.get('GITHUB_DEFAULT_BASE_BRANCH', 'main')
         repo_details = getattr(story, 'repository_details', None) if story else (context_story.get('repository_details') if isinstance(context_story, dict) else None)
-        if repo_details and isinstance(repo_details, list) and len(repo_details) > 0 and isinstance(repo_details[0], dict):
-            base_branch = repo_details[0].get('branch') or base_branch
+        story_source_branch = getattr(story, 'source_branch', None) if story else (context_story.get('source_branch') if isinstance(context_story, dict) else None)
+        if story_source_branch:
+            base_branch = str(story_source_branch).strip()
+        elif repo_details and isinstance(repo_details, list) and len(repo_details) > 0 and isinstance(repo_details[0], dict):
+            base_branch = repo_details[0].get('branch') or repo_details[0].get('target_branch') or base_branch
 
         key_identifier = jira_key or (f"STORY-{story_id}" if story_id else "TASK")
         random_digits = random.randint(10000000, 99999999)
@@ -441,6 +444,7 @@ class Orchestrator:
             'workflow_id': workflow_id,
             'developer_output': developer_output,
             'target_branch': target_branch,
+            'base_branch': base_branch,
             'triggered_by_user_id': triggered_by_user_id,
             'workspace_dir': workspace_dir,
             'repo_dir': implementation_map.get('repo_dir'),

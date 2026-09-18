@@ -150,7 +150,32 @@ def submit_qa_decision(story_id):
         return jsonify({"error": "No open PR found for this story."}), 404
 
     # Delegate to approve/reject endpoints via internal logic
+    github_merge_result = None
     if decision == 'approved':
+        # Execute real GitHub merge to main branch
+        if pr.pr_number:
+            try:
+                from app.services.github_service import GitHubService
+                from flask import current_app
+                repo_url = pr.pr_url.split('/pull/')[0] if (pr.pr_url and '/pull/' in pr.pr_url) else current_app.config.get('GITHUB_BASE_URL', '')
+                gh_service = GitHubService.from_app_config(repo_url)
+                commit_title = f"feat({story.jira_story_key or f'STORY-{story.id}'}): {story.title} (PR #{pr.pr_number})"
+                commit_msg = f"Approved by QA Reviewer #{request.current_user.id}.\nDEVAA Automated Implementation."
+                github_merge_result = gh_service.merge_pr(
+                    repo_url=repo_url,
+                    pr_number=pr.pr_number,
+                    commit_title=commit_title,
+                    commit_message=commit_msg,
+                    merge_method="squash"
+                )
+                if github_merge_result.get("merged"):
+                    logger.info(f"[QA] Successfully merged PR #{pr.pr_number} into target base branch on GitHub.")
+                else:
+                    logger.warning(f"[QA] GitHub merge was not completed: {github_merge_result.get('error')}")
+            except Exception as gh_err:
+                logger.error(f"[QA] Error calling GitHub merge API: {gh_err}")
+                github_merge_result = {"merged": False, "error": str(gh_err)}
+
         pr.pr_status = 'merged'
         from datetime import datetime
         pr.merged_by = request.current_user.id
@@ -168,12 +193,27 @@ def submit_qa_decision(story_id):
             logger.info(f"[QA] Successfully purged overlay collection for workflow {pr.workflow_id}, story {story_id}")
         except Exception as purge_err:
             logger.warning(f"[QA] Could not purge workflow overlay: {purge_err}")
+
+        # Live pipeline log for merge
+        try:
+            from app.models.devaa_models import PipelineLog
+            if github_merge_result and github_merge_result.get("merged"):
+                msg = f"🔀 GitHub PR #{pr.pr_number} successfully merged into main branch."
+                lvl = 'success'
+            else:
+                msg = f"⚠️ GitHub PR #{pr.pr_number} merge note: {github_merge_result.get('error') if github_merge_result else 'No remote PR'}"
+                lvl = 'warning'
+            p_log = PipelineLog(story_id=story_id, workflow_id=pr.workflow_id, agent='QA Reviewer', level=lvl, message=msg)
+            db.session.add(p_log)
+        except Exception:
+            pass
     else:
         pr.pr_status = 'rejected'
         story.status = 'TO-DO'
         new_status = 'TO-DO'
 
     db.session.commit()
+
 
     # Log QA review
     review = QAReview(

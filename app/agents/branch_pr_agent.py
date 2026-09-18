@@ -98,7 +98,23 @@ class BranchPRAgent(BaseAgent):
         pr_url = None
         pr_number = None
         github_token = current_app.config.get('GITHUB_TOKEN', '').strip()
-        base_branch = current_app.config.get('GITHUB_DEFAULT_BASE_BRANCH', 'main')
+        # Determine base branch: context > story.source_branch > repository_details > config default
+        story_repo_details = (
+            getattr(story, 'repository_details', None) if story else
+            (story.get('repository_details') if isinstance(story, dict) else None)
+        )
+        first_repo = (
+            story_repo_details[0] if (isinstance(story_repo_details, list) and len(story_repo_details) > 0 and isinstance(story_repo_details[0], dict))
+            else {}
+        )
+        base_branch = (
+            context.get('base_branch')
+            or (getattr(story, 'source_branch', None) if story else (story.get('source_branch') if isinstance(story, dict) else None))
+            or first_repo.get('branch')
+            or first_repo.get('target_branch')
+            or current_app.config.get('GITHUB_DEFAULT_BASE_BRANCH', 'main')
+        )
+        base_branch = str(base_branch).strip() if base_branch else 'main'
 
         if not github_token:
             err_msg = "GITHUB_TOKEN is not configured in backend/.env. Real GitHub branch and PR cannot be created without a valid token."
