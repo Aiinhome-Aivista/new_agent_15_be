@@ -239,11 +239,12 @@ def create_story():
             except Exception as read_err:
                 logger.warning(f"Failed processing file {fname}: {read_err}")
 
+    repo_url = data.get('repo_url', '').strip()
     repository_details = data.get('repository_details')
     if not repository_details:
         repository_details = [{
-            "name": "",
-            "url": "",
+            "name": repo_url.split('/')[-1].replace('.git', '') if repo_url else "",
+            "url": repo_url,
             "branch": data.get('source_branch') or 'main',
             "external_assignee": assignee,
             "priority": priority,
@@ -258,6 +259,8 @@ def create_story():
     elif isinstance(repository_details, list) and len(repository_details) > 0 and isinstance(repository_details[0], dict):
         repository_details[0]["created_in_devaa"] = True
         repository_details[0]["origin"] = "devaa"
+        if repo_url:
+            repository_details[0]["url"] = repo_url
 
 
     story = Story(
@@ -396,6 +399,10 @@ def update_story(story_id):
         first_det['due_date'] = due_date
     if labels is not None:
         first_det['labels'] = labels
+    repo_url = data.get('repo_url')
+    if repo_url is not None:
+        first_det['url'] = repo_url.strip()
+        first_det['name'] = repo_url.strip().split('/')[-1].replace('.git', '') if repo_url.strip() else first_det.get('name', '')
 
     details[0] = first_det
     story.repository_details = details

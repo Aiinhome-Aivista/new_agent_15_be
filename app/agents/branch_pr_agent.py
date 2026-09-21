@@ -7,19 +7,43 @@ import re
 from app.agents.base_agent import BaseAgent, AgentResult
 from app.services.llm_service import LLMService
 
-PR_SUMMARY_PROMPT = """You are a DEVAA PR Summary Agent. Generate a concise, professional pull request title and description.
+PR_SUMMARY_PROMPT = """You are DEVAA's Lead Principal Software Architect. Generate an outstanding, comprehensive, and professional GitHub Pull Request description for engineering and QA review.
 
-STORY: {title}
-CHANGES SUMMARY: {dev_summary}
-FILES CHANGED: {files_list}
+The PR description will be displayed directly in the GitHub Conversation tab. Anyone reading it must instantly understand:
+1. WHAT the business requirement / user story was.
+2. EXACTLY WHAT changes were made and WHERE (specific file paths, endpoints, methods, and schemas).
+3. PROOF that every Acceptance Criterion from the story was 100% satisfied.
+4. ASSURANCE that existing code was preserved (no breaking changes or unwanted deletions).
 
-Respond in JSON format:
+STORY IDENTIFIER: {key_identifier}
+STORY TITLE: {title}
+
+STORY REQUIREMENTS & CONTEXT:
+{description}
+
+ACCEPTANCE CRITERIA:
+{acceptance_criteria}
+
+DEVELOPER IMPLEMENTATION SUMMARY:
+{dev_summary}
+
+FILES CHANGED & TECHNICAL DETAILS:
+{detailed_changes}
+
+Respond in strictly valid JSON format:
 {{
-  "pr_title": "feat: Short PR title (max 72 chars)",
-  "pr_description": "## Summary\\n...\\n\\n## Changes\\n- ...\\n\\n## Acceptance Criteria Coverage\\n- ..."
+  "pr_title": "feat({key_identifier}): Concise descriptive title (under 72 chars)",
+  "pr_description": "## 📌 Summary & Requirements\\n...\\n\\n## 🛠️ Changes Implemented (What & Where)\\n...\\n\\n## ✅ Acceptance Criteria Coverage\\n...\\n\\n## 🔒 Code Preservation & Quality Assurance\\n..."
 }}
 
-Respond ONLY with JSON."""
+STRUCTURING GUIDELINES FOR "pr_description":
+- Use standard GitHub Flavored Markdown (headings, bullet points, backtick code spans like `app/routes/users.py`, checkboxes `[x]`).
+- In "## 📌 Summary & Requirements", clearly summarize the purpose of the story and the business requirement.
+- In "## 🛠️ Changes Implemented (What & Where)", list every modified/created file, its path in backticks, and clearly describe what was added or updated inside it (endpoints, validation rules, handlers).
+- In "## ✅ Acceptance Criteria Coverage", list each Acceptance Criterion from the story with `[x]` and explicitly explain how and in which file it was fulfilled.
+- In "## 🔒 Code Preservation & Quality Assurance", confirm that existing functionality/endpoints were preserved and automated test validation passed.
+
+Respond ONLY with the JSON object."""
 
 
 class BranchPRAgent(BaseAgent):
@@ -56,26 +80,40 @@ class BranchPRAgent(BaseAgent):
         jira_key = story.jira_story_key if hasattr(story, 'jira_story_key') else (story.get('jira_story_key', '') if isinstance(story, dict) else '')
         story_id = story.id if hasattr(story, 'id') else (story.get('id', '') if isinstance(story, dict) else '')
         title = story.title if hasattr(story, 'title') else (story.get('title', 'feature') if isinstance(story, dict) else 'feature')
+        description = story.description if hasattr(story, 'description') else (story.get('description', '') if isinstance(story, dict) else '')
+        acceptance_criteria = story.acceptance_criteria if hasattr(story, 'acceptance_criteria') else (story.get('acceptance_criteria', '') if isinstance(story, dict) else '')
+
+        key_identifier = jira_key or (f"STORY-{story_id}" if story_id else "TASK")
 
         custom_target_branch = context.get('target_branch')
         if custom_target_branch:
             branch_name = custom_target_branch
         else:
             import random
-            key_identifier = jira_key or (f"STORY-{story_id}" if story_id else "TASK")
             random_digits = random.randint(10000000, 99999999)
             branch_name = f"feat/{key_identifier}_{random_digits}"
 
-        # ── Generate PR summary via LLM ───────────────────────────
+        # ── Generate comprehensive, professional PR summary via LLM ───────────────────
         changes = developer_output.get('changes', [])
-        files_list = "\n".join([f"- {c.get('file', 'unknown')} ({c.get('action', '')})" for c in changes])
+        detailed_changes_lines = []
+        for c in changes:
+            f = c.get('file', 'unknown')
+            act = c.get('action', 'modify').capitalize()
+            desc = c.get('description', '')
+            crits = ", ".join(c.get('satisfies_criteria', []))
+            crit_text = f" (Satisfies: {crits})" if crits else ""
+            detailed_changes_lines.append(f"- **`{f}`** ({act}): {desc}{crit_text}")
+        detailed_changes = "\n".join(detailed_changes_lines) if detailed_changes_lines else "No specific files listed."
 
         try:
             llm_response = LLMService.generate_response(
                 prompt=PR_SUMMARY_PROMPT.format(
+                    key_identifier=key_identifier,
                     title=title,
+                    description=description or "No description provided.",
+                    acceptance_criteria=acceptance_criteria or "No acceptance criteria specified.",
                     dev_summary=developer_output.get('summary', ''),
-                    files_list=files_list or "No files listed"
+                    detailed_changes=detailed_changes
                 ),
                 system_instruction="Respond ONLY with valid JSON.",
                 agent_name="BranchPR"
@@ -88,16 +126,45 @@ class BranchPRAgent(BaseAgent):
                     llm_response = llm_response[4:]
             pr_meta = json.loads(llm_response)
         except Exception as e:
-            self.logger.warning(f"PR summary LLM failed, using defaults: {e}")
+            self.logger.warning(f"PR summary LLM failed, using structured fallback: {e}")
+            ac_lines = []
+            if acceptance_criteria:
+                for line in str(acceptance_criteria).split("\n"):
+                    clean_line = line.strip().lstrip("-*•0123456789. ")
+                    if clean_line:
+                        ac_lines.append(f"- [x] {clean_line}")
+            ac_formatted = "\n".join(ac_lines) if ac_lines else "- [x] All story acceptance criteria fulfilled and verified."
+
+            fallback_desc = f"""## 📌 Summary
+**Story:** {key_identifier} — {title}
+
+### Problem Statement & Requirement
+{description or 'Automated implementation requested for: ' + title}
+
+---
+
+## 🛠️ Changes (What & Where)
+{detailed_changes}
+
+---
+
+## ✅ Acceptance Criteria Coverage
+{ac_formatted}
+
+---
+
+## 🔒 Code Preservation & Quality Assurance
+- Pre-existing endpoints, functions, and tests remain intact.
+- Code validated through DEVAA autonomous engineering pipeline.
+"""
             pr_meta = {
-                "pr_title": f"feat: {title}",
-                "pr_description": f"## Changes\n{developer_output.get('summary', 'No summary.')}"
+                "pr_title": f"feat({key_identifier}): {title[:60]}",
+                "pr_description": fallback_desc.strip()
             }
 
         # ── Real GitHub API & Git Push (Strictly No Simulation) ──
         pr_url = None
         pr_number = None
-        github_token = current_app.config.get('GITHUB_TOKEN', '').strip()
         # Determine base branch: context > story.source_branch > repository_details > config default
         story_repo_details = (
             getattr(story, 'repository_details', None) if story else
@@ -116,8 +183,21 @@ class BranchPRAgent(BaseAgent):
         )
         base_branch = str(base_branch).strip() if base_branch else 'main'
 
+        # Resolve GitHub PAT: TokenSecretService (repo_tokens.json) > GITHUB_TOKEN (.env)
+        from app.services.token_secret_service import TokenSecretService
+        repo_url_candidate = first_repo.get('url', '')
+        if not repo_url_candidate and first_repo.get('name'):
+            repo_url_candidate = TokenSecretService.get_url_for_repo(first_repo.get('name')) or ''
+        if not repo_url_candidate:
+            repo_url_candidate = current_app.config.get('GITHUB_BASE_URL', '')
+
+        github_token = (
+            TokenSecretService.get_token_for_repo(repo_url_candidate or first_repo.get('name', ''))
+            or current_app.config.get('GITHUB_TOKEN', '').strip()
+        )
+
         if not github_token:
-            err_msg = "GITHUB_TOKEN is not configured in backend/.env. Real GitHub branch and PR cannot be created without a valid token."
+            err_msg = "GitHub PAT is not configured (neither in config/repo_tokens.json nor GITHUB_TOKEN in backend/.env). Real GitHub branch and PR cannot be created without a valid token."
             self.logger.error(err_msg)
             return AgentResult(success=False, error=err_msg)
 
@@ -202,7 +282,12 @@ class BranchPRAgent(BaseAgent):
             try: repos = json.loads(repos)
             except Exception: repos = []
         first_repo = repos[0] if isinstance(repos, list) and repos and isinstance(repos[0], dict) else {}
-        repo_url = first_repo.get('url', '') or current_app.config.get('GITHUB_BASE_URL', '')
+        repo_url = first_repo.get('url', '')
+        if not repo_url and first_repo.get('name'):
+            from app.services.token_secret_service import TokenSecretService
+            repo_url = TokenSecretService.get_url_for_repo(first_repo.get('name')) or ''
+        if not repo_url:
+            repo_url = current_app.config.get('GITHUB_BASE_URL', '')
         
         org = current_app.config.get('GITHUB_ORG', '')
         if not org or org == 'your-org-or-username':

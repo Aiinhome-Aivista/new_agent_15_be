@@ -86,6 +86,9 @@ class RepoAnalysisAgent(BaseAgent):
         
         for repo in repo_details:
             repo_url = repo.get('url')
+            if not repo_url and repo.get('name'):
+                from app.services.token_secret_service import TokenSecretService
+                repo_url = TokenSecretService.get_url_for_repo(repo.get('name'))
             if not repo_url: continue
             
             # Check guardrail
@@ -122,7 +125,8 @@ class RepoAnalysisAgent(BaseAgent):
             repo_dir = os.path.join(workspace_dir, repo_name)
 
             try:
-                github_token = self.config.get('GITHUB_TOKEN')
+                from app.services.token_secret_service import TokenSecretService
+                github_token = TokenSecretService.get_token_for_repo(repo_url) or self.config.get('GITHUB_TOKEN')
                 clone_url = repo_url
                 if github_token and "github.com" in repo_url:
                     clone_url = repo_url.replace("https://github.com/", f"https://x-access-token:{github_token}@github.com/")

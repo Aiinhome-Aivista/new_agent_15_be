@@ -35,13 +35,37 @@ class GitHubService:
 
         api_base = f"https://api.github.com/repos/{org}/{repo_name}"
 
+        # Fetch PR details to include initial PR description & requirements
+        pr_body = ""
+        pr_title = ""
+        pr_author = ""
+        try:
+            resp = requests.get(f"{api_base}/pulls/{pr_number}", headers=self._headers, timeout=10)
+            if resp.status_code == 200:
+                pr_data = resp.json()
+                pr_body = pr_data.get("body") or ""
+                pr_title = pr_data.get("title") or ""
+                pr_author = (pr_data.get("user") or {}).get("login") or ""
+        except Exception as e:
+            logger.warning(f"Failed to fetch PR details for #{pr_number}: {e}")
+
         issue_comments = self._fetch_all(f"{api_base}/issues/{pr_number}/comments")
         reviews = self._fetch_all(f"{api_base}/pulls/{pr_number}/reviews")
         review_comments = self._fetch_all(f"{api_base}/pulls/{pr_number}/comments")
 
-        summary = self.build_conversation_summary(pr_number, issue_comments, reviews, review_comments)
+        summary = self.build_conversation_summary(
+            pr_number, 
+            issue_comments, 
+            reviews, 
+            review_comments,
+            pr_body=pr_body,
+            pr_title=pr_title
+        )
 
         return {
+            "pr_title": pr_title,
+            "pr_body": pr_body,
+            "pr_author": pr_author,
             "issue_comments": issue_comments,
             "reviews": reviews,
             "review_comments": review_comments,
@@ -55,13 +79,24 @@ class GitHubService:
         pr_number: int,
         issue_comments: list,
         reviews: list,
-        review_comments: list
+        review_comments: list,
+        pr_body: str = "",
+        pr_title: str = ""
     ) -> str:
         """
         Generates a structured markdown summary of the complete PR conversation
-        including review verdicts, inline code comments, discussion thread, and open items.
+        including PR description, review verdicts, inline code comments, discussion thread, and open items.
         """
-        lines = [f"## PR #{pr_number} - Complete Conversation Summary\n"]
+        lines = []
+        if pr_title:
+            lines.append(f"## {pr_title} (#{pr_number})\n")
+        else:
+            lines.append(f"## PR #{pr_number} - Complete Conversation Summary\n")
+
+        # Initial PR Description & Requirements (Conversation Opening)
+        if pr_body:
+            lines.append(pr_body)
+            lines.append("\n---\n")
 
         # Review Verdicts
         if reviews:

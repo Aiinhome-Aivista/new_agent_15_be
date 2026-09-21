@@ -88,12 +88,37 @@ class SyncService:
                     if t_match and t_match.group(1).strip():
                         task_title = t_match.group(1).strip()
 
+                # ── Extract repository details from description if present ──
+                target_repo_name = "main-repo"
+                target_repo_url = default_repo_url
+                target_repo_branch = default_base_branch
+
+                from app.services.token_secret_service import TokenSecretService
+
+                repo_name_m = re.search(r'(?:^|\n)\s*(?:Name|Repository|Repo)\s*[:\-]\s*([^\s\n\r]+)', raw_desc, re.IGNORECASE)
+                repo_url_m = re.search(r'(?:^|\n)\s*(?:URL|Link|Git)\s*[:\-]\s*(https?://[^\s\n\r]+|git@[^\s\n\r]+)', raw_desc, re.IGNORECASE)
+                branch_m = re.search(r'(?:^|\n)\s*(?:Branch|Base\s*Branch|Source\s*Branch)\s*[:\-]\s*([^\s\n\r]+)', raw_desc, re.IGNORECASE)
+
+                if repo_name_m:
+                    parsed_name = repo_name_m.group(1).strip().strip('`').strip('"').strip("'")
+                    target_repo_name = parsed_name
+                    repo_cfg = TokenSecretService.get_repo_config(parsed_name)
+                    if repo_cfg:
+                        if repo_cfg.get('url'):
+                            target_repo_url = repo_cfg.get('url')
+                        if repo_cfg.get('branch'):
+                            target_repo_branch = repo_cfg.get('branch')
+
+                if repo_url_m:
+                    target_repo_url = repo_url_m.group(1).strip().strip('`')
+                if branch_m:
+                    target_repo_branch = branch_m.group(1).strip().strip('`')
 
                 if existing:
                     # Update any missing or updated fields on existing story
                     updated = False
-                    if not existing.source_branch:
-                        existing.source_branch = default_base_branch
+                    if not existing.source_branch or (branch_m and existing.source_branch != target_repo_branch):
+                        existing.source_branch = target_repo_branch
                         updated = True
                     if task_desc and (not existing.description or existing.description != task_desc):
                         existing.description = task_desc
@@ -109,6 +134,15 @@ class SyncService:
                     if details and isinstance(details[0], dict):
                         first_det = details[0]
                         det_updated = False
+                        if repo_name_m and first_det.get('name') != target_repo_name:
+                            first_det['name'] = target_repo_name
+                            det_updated = True
+                        if target_repo_url and first_det.get('url') != target_repo_url:
+                            first_det['url'] = target_repo_url
+                            det_updated = True
+                        if target_repo_branch and first_det.get('branch') != target_repo_branch:
+                            first_det['branch'] = target_repo_branch
+                            det_updated = True
                         if task_prio and first_det.get('priority') != task_prio:
                             first_det['priority'] = task_prio
                             det_updated = True
@@ -146,9 +180,9 @@ class SyncService:
                 provider_name = current_app.config.get('ACTIVE_TASK_PROVIDER', 'manual').lower()
 
                 repo_info = {
-                    "name": "main-repo",
-                    "url": default_repo_url,
-                    "branch": default_base_branch,
+                    "name": target_repo_name,
+                    "url": target_repo_url,
+                    "branch": target_repo_branch,
                     "external_assignee": task.assignee_email,
                     "priority": task_prio
                 }
@@ -174,7 +208,7 @@ class SyncService:
                     title=task_title,
                     description=task_desc,
                     acceptance_criteria=task_ac,
-                    source_branch=default_base_branch,
+                    source_branch=target_repo_branch,
                     assignee_id=user.id,
                     owner_id=user.id,
                     status=mapped_status,
