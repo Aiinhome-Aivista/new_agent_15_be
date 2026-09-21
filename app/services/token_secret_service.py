@@ -161,9 +161,10 @@ class TokenSecretService:
 
         Resolution order:
         1. Exact/normalised match in repositories dict (from dict or str)
-        2. default_pat from repo_tokens.json
-        3. GITHUB_TOKEN from Flask app config
-        4. GITHUB_TOKEN environment variable
+        2. Environment variable for specific repo: GITHUB_TOKEN_<REPO_SLUG> (e.g. GITHUB_TOKEN_REFERENCE_STRUCTURE_API)
+        3. REFERENCE_GITHUB_TOKEN from environment if repo is reference
+        4. default_pat from repo_tokens.json
+        5. GITHUB_TOKEN from Flask app config / environment variable
 
         Returns the resolved token string, or None if no token is configured.
         """
@@ -172,15 +173,32 @@ class TokenSecretService:
             logger.debug(f"TokenSecretService: Found token for '{repo_url_or_name}' via repo config")
             return cfg.get("token")
 
+        # Check repo-slug environment variable (e.g. GITHUB_TOKEN_REFERENCE_STRUCTURE_API)
+        if repo_url_or_name:
+            norm = TokenSecretService._normalise(repo_url_or_name)
+            repo_slug = norm.split('/')[-1].replace('-', '_').replace('.', '_').upper()
+            env_specific_key = f"GITHUB_TOKEN_{repo_slug}"
+            env_specific_token = os.environ.get(env_specific_key, "").strip()
+            if env_specific_token:
+                logger.debug(f"TokenSecretService: Found token via environment variable '{env_specific_key}'")
+                return env_specific_token
+
+        # Check REFERENCE_GITHUB_TOKEN if repo name/url indicates reference
+        if repo_url_or_name and ("ref" in repo_url_or_name.lower() or "reference" in repo_url_or_name.lower()):
+            ref_env_token = os.environ.get("REFERENCE_GITHUB_TOKEN", "").strip()
+            if ref_env_token:
+                logger.debug("TokenSecretService: Using REFERENCE_GITHUB_TOKEN from environment variable")
+                return ref_env_token
+
         tokens_data = _load_tokens()
 
-        # 2. default_pat from file
+        # default_pat from file
         default_pat = tokens_data.get("default_pat", "").strip()
         if default_pat and not default_pat.startswith("ghp_xxx"):
             logger.debug("TokenSecretService: Using default_pat from repo_tokens.json")
             return default_pat
 
-        # 3. GITHUB_TOKEN from Flask app config
+        # GITHUB_TOKEN from Flask app config
         try:
             from flask import current_app
             flask_token = current_app.config.get("GITHUB_TOKEN", "").strip()
@@ -190,7 +208,7 @@ class TokenSecretService:
         except Exception:
             pass
 
-        # 4. GITHUB_TOKEN from environment variable
+        # GITHUB_TOKEN from environment variable
         env_token = os.environ.get("GITHUB_TOKEN", "").strip()
         if env_token:
             logger.debug("TokenSecretService: Using GITHUB_TOKEN from environment variable")

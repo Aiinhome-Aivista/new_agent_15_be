@@ -97,6 +97,29 @@ class IntakeValidationAgent(BaseAgent):
             elif isinstance(story, dict):
                 story['repository_details'] = target_repo
 
+        # 5. Extract Reference Git Link from description if not set
+        curr_ref_url = getattr(story, 'reference_repo_url', None) if hasattr(story, 'reference_repo_url') else (story.get('reference_repo_url') if isinstance(story, dict) else None)
+        if not curr_ref_url:
+            desc = getattr(story, 'description', '') if hasattr(story, 'description') else (story.get('description', '') if isinstance(story, dict) else '')
+            ac = getattr(story, 'acceptance_criteria', '') if hasattr(story, 'acceptance_criteria') else (story.get('acceptance_criteria', '') if isinstance(story, dict) else '')
+            combined = f"{desc}\n{ac}"
+            import re
+            ref_match = re.search(
+                r'(?:Reference Repo|Reference Git|Ref Repo|Reference Link|Reference Code|Reference)\s*[:\-]?\s*(https?://github\.com/[^\s\)>\"\']+)',
+                combined,
+                re.IGNORECASE
+            )
+            if not ref_match:
+                # Fallback pattern for any github link containing 'ref' or secondary git link
+                ref_match = re.search(r'(https?://github\.com/[^\s\)>\"\']+(?:ref|reference)[^\s\)>\"\']*)', combined, re.IGNORECASE)
+
+            if ref_match:
+                ref_url = ref_match.group(1).strip()
+                self.logger.info(f"[IntakeValidationAgent] Detected reference Git URL in story description: {ref_url}")
+                if hasattr(story, 'reference_repo_url'):
+                    story.reference_repo_url = ref_url
+                elif isinstance(story, dict):
+                    story['reference_repo_url'] = ref_url
 
         # Commit auto-filled fields to DB if story is a DB model
         if hasattr(self, 'db') and hasattr(self.db, 'session'):

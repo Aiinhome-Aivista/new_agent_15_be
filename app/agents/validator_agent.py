@@ -21,8 +21,9 @@ Changes Made:
 GUIDANCE FOR VALIDATION:
 1. Verify whether the new functionality requested in the story acceptance criteria has been completely and correctly implemented in the code.
 2. PRESERVATION & REGRESSION: Verify that preexisting endpoints, routes, methods, and functions were NOT deleted, truncated, or broken. If a new API was requested, verify that existing APIs remain untouched.
-3. Automated Tests: Confirm that appropriate automated test cases covering valid, invalid, and edge cases are included.
-4. If all Acceptance Criteria are met, code preservation is upheld, and tests are present, mark `passed: true`. Otherwise mark `passed: false` and provide clear, actionable feedback.
+3. REFERENCE REPOSITORY CONTRACTS: Confirm that generated functions follow the structural signatures and design patterns established in the Reference Git Knowledge Base.
+4. Automated Tests: Confirm that appropriate automated test cases covering valid, invalid, and edge cases are included.
+5. If all Acceptance Criteria are met, code preservation is upheld, and tests are present, mark `passed: true`. Otherwise mark `passed: false` and provide clear, actionable feedback.
 
 Respond in this exact JSON format:
 {{

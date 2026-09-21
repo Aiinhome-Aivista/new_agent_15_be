@@ -124,13 +124,37 @@ class DeveloperAgent(BaseAgent):
 
         # ── RAG Query for Reference Sources (Jira Attachments, Git Links, KB) ──
         reference_section = ""
-        reference_collection_name = context.get('reference_collection')
         story_id_val = story.id if hasattr(story, 'id') else (story.get('id') if isinstance(story, dict) else None)
-        if not reference_collection_name and story_id_val:
-            reference_collection_name = f"story_refs_{story_id_val}"
+        
+        # 1. Reference Git Knowledge Base (Function References & Patterns)
+        ref_kb_col_name = impl_map.get('reference_collection_name') or context.get('reference_collection_name')
+        ref_funcs = impl_map.get('reference_functions', [])
+        
         try:
-            if reference_collection_name:
-                from app.services.reference_source_service import ReferenceSourceService
+            from app.services.reference_source_service import ReferenceSourceService
+            if ref_kb_col_name:
+                ref_query = f"{title} {acceptance_criteria} {description}"[:500]
+                kb_results = ReferenceSourceService.query_reference_kb(ref_kb_col_name, ref_query, n_results=6)
+                if kb_results:
+                    ref_funcs = kb_results
+
+            if ref_funcs:
+                reference_section += "\n## REFERENCE GIT KNOWLEDGE BASE (FUNCTION REFERENCES & ARCHITECTURE):\n"
+                reference_section += "Use these extracted reference function signatures, parameters, docstrings, and structures as gold-standard implementation templates:\n"
+                for rf in ref_funcs:
+                    reference_section += (
+                        f"\n--- [FUNCTION REFERENCE] Symbol: {rf.get('symbol_name')} ({rf.get('symbol_type')}) ---\n"
+                        f"File: {rf.get('file_path')}\n"
+                        f"Signature: {rf.get('signature')}\n"
+                        f"Docstring: {rf.get('docstring', '')}\n"
+                        f"Code Blueprint:\n{rf.get('code_snippet') or rf.get('code', '')}\n"
+                    )
+        except Exception as ref_kb_err:
+            self.logger.warning(f"[DeveloperAgent] Reference KB query failed (non-fatal): {ref_kb_err}")
+
+        # 2. Jira Attachment & Link References
+        try:
+            if story_id_val:
                 ref_query = f"{title} {acceptance_criteria} {description}"[:500]
                 ref_results = ReferenceSourceService.query_references(
                     story_id=story_id_val or 0,
@@ -138,14 +162,14 @@ class DeveloperAgent(BaseAgent):
                     n_results=5
                 )
                 if ref_results:
-                    reference_section = "\n## REFERENCE SOURCES (Jira Attachments, Git Links, Knowledge Base):\n"
+                    reference_section += "\n## JIRA ATTACHMENT & DOC REFERENCES:\n"
                     for ref in ref_results:
                         src_type = ref.get('source_type', 'reference')
                         fname = ref.get('filename', '')
                         text = ref.get('text', '')
                         reference_section += f"\n--- [{src_type.upper()}] {fname} ---\n{text[:1500]}\n"
         except Exception as ref_err:
-            self.logger.warning(f"[DeveloperAgent] Reference source query failed (non-fatal): {ref_err}")
+            self.logger.warning(f"[DeveloperAgent] Story reference query failed (non-fatal): {ref_err}")
 
         prompt = DEVELOPER_PROMPT_TEMPLATE.format(
 

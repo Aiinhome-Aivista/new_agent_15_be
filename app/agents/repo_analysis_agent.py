@@ -195,11 +195,61 @@ class RepoAnalysisAgent(BaseAgent):
             except Exception as e:
                 self.logger.error(f"Failed to clone/index repo {repo_url} into {repo_dir}: {e}")
 
+        # ── REFERENCE GIT REPOSITORY KNOWLEDGE BASE ───────────────
+        ref_repo_url = getattr(story, 'reference_repo_url', None) if hasattr(story, 'reference_repo_url') else (story.get('reference_repo_url') if isinstance(story, dict) else None)
+        ref_repo_branch = getattr(story, 'reference_repo_branch', 'main') if hasattr(story, 'reference_repo_branch') else (story.get('reference_repo_branch', 'main') if isinstance(story, dict) else 'main')
+        
+        reference_functions = []
+        reference_col_name = ""
+        reference_context_text = ""
+
+        if ref_repo_url:
+            try:
+                from app.services.reference_source_service import ReferenceSourceService
+                self.logger.info(f"[RepoAnalysisAgent] Triggering Reference Git Knowledge Base indexing for '{ref_repo_url}'...")
+                ref_res = ReferenceSourceService.index_reference_git_repo(ref_repo_url, branch=ref_repo_branch)
+                reference_col_name = ref_res.get('collection_name', '')
+                
+                # Query reference functions for story requirement
+                query_str = f"{title}\n{description}\n{acceptance_criteria}"
+                ref_funcs = ReferenceSourceService.query_reference_kb(reference_col_name, query_str, n_results=6)
+                reference_functions = ref_funcs
+
+                ref_snippets = []
+                for rf in ref_funcs:
+                    ref_snippets.append(
+                        f"Symbol: {rf.get('symbol_name')} ({rf.get('symbol_type')})\n"
+                        f"File: {rf.get('file_path')}\n"
+                        f"Signature: {rf.get('signature')}\n"
+                        f"Code:\n{rf.get('code_snippet')}"
+                    )
+                if ref_snippets:
+                    reference_context_text = "\n\n".join(ref_snippets)
+                    self.logger.info(f"[RepoAnalysisAgent] Retrieved {len(ref_funcs)} function references from Knowledge Base '{reference_col_name}'")
+
+                # Store metadata back on story if DB model
+                if hasattr(story, 'reference_repo_metadata'):
+                    story.reference_repo_metadata = {
+                        "collection_name": reference_col_name,
+                        "indexed_functions": ref_res.get("total_functions", 0),
+                        "commit_sha": ref_res.get("commit_sha", "")
+                    }
+                    if hasattr(self, 'db') and hasattr(self.db, 'session'):
+                        try:
+                            self.db.session.commit()
+                        except Exception:
+                            pass
+            except Exception as ref_err:
+                self.logger.warning(f"[RepoAnalysisAgent] Reference Git Knowledge Base extraction failed: {ref_err}")
+
         rag_context = ""
         if repo_texts:
             rag_context = "\n\n".join(repo_texts[:12])
         else:
             rag_context = "No relevant repository context could be loaded."
+
+        if reference_context_text:
+            rag_context += f"\n\n=== REFERENCE REPOSITORY KNOWLEDGE BASE (FUNCTIONS & PATTERNS) ===\n{reference_context_text}"
 
         qa_feedback = context.get('qa_feedback')
         rework_section = ""
@@ -250,6 +300,9 @@ analysis on files, dependencies, and architectural patterns relevant to resolvin
                     "commit_sha": commit_sha if 'commit_sha' in locals() else '',
                     "base_collection": base_col.name if 'base_col' in locals() and base_col else '',
                     "overlay_collection": overlay_col.name if 'overlay_col' in locals() and overlay_col else '',
+                    "reference_repo_url": ref_repo_url,
+                    "reference_collection_name": reference_col_name,
+                    "reference_functions": reference_functions
                 }
             )
 

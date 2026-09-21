@@ -15,6 +15,9 @@ class Story(db.Model):
     acceptance_criteria = db.Column(db.Text, nullable=True)
     repository_details = db.Column(db.JSON, nullable=True)  # [{url, name, branch}]
     source_branch = db.Column(db.String(255), nullable=True)
+    reference_repo_url = db.Column(db.String(500), nullable=True)
+    reference_repo_branch = db.Column(db.String(255), nullable=True, default='main')
+    reference_repo_metadata = db.Column(db.JSON, nullable=True)
     assignee_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=True)
     owner_id = db.Column(db.Integer, db.ForeignKey('users.id'), nullable=False)
     status = db.Column(db.String(50), default='TO-DO')  # TO-DO | IN-PROGRESS | QA-TESTING | DONE | INVALID
@@ -56,6 +59,9 @@ class Story(db.Model):
             'acceptance_criteria': self.acceptance_criteria,
             'repository_details': self.repository_details,
             'source_branch': self.source_branch,
+            'reference_repo_url': self.reference_repo_url,
+            'reference_repo_branch': self.reference_repo_branch,
+            'reference_repo_metadata': self.reference_repo_metadata,
             'assignee_id': self.assignee_id,
             'owner_id': self.owner_id,
             'status': self.status,

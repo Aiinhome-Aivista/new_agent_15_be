@@ -352,3 +352,275 @@ class ReferenceSourceService:
             logger.warning(f"[ReferenceSourceService] Query failed for '{collection_name}': {e}")
             return []
 
+    # ─────────────────────────────────────────────────────────────────────────
+    # Reference Git Knowledge Base & AST Function Harvester
+    # ─────────────────────────────────────────────────────────────────────────
+
+    @classmethod
+    def index_reference_git_repo(cls, repo_url: str, branch: str = 'main') -> dict:
+        """
+        Clones a Reference Git repository, parses AST function signatures (Python, JS, TS),
+        and indexes the reference knowledge base into a dedicated ChromaDB collection (`ref_kb_<slug>`).
+        """
+        if not repo_url:
+            return {"error": "No reference repository URL provided"}
+
+        import hashlib, subprocess, shutil, ast
+        from app.services.token_secret_service import TokenSecretService
+        from app.services.rag_service import RagService
+        from flask import current_app
+        from app.config.settings import Config
+
+        # Normalize slug & collection name
+        norm_name = TokenSecretService._normalise(repo_url)
+        repo_slug = norm_name.split('/')[-1].replace('-', '_').replace('.', '_')
+        collection_name = f"ref_kb_{repo_slug}"
+
+        # Resolve clone workspace
+        workspaces_root = getattr(Config, 'WORKSPACES_DIR', os.path.abspath(os.path.join(current_app.root_path, '..', 'workspaces')))
+        ref_repos_dir = os.path.join(workspaces_root, "ref_repos")
+        os.makedirs(ref_repos_dir, exist_ok=True)
+        target_dir = os.path.join(ref_repos_dir, repo_slug)
+
+        token = TokenSecretService.get_token_for_repo(repo_url)
+        clone_url = repo_url
+        if token and "github.com" in repo_url:
+            clone_url = repo_url.replace("https://github.com/", f"https://x-access-token:{token}@github.com/")
+
+        # Clone or update
+        try:
+            if os.path.exists(os.path.join(target_dir, '.git')):
+                logger.info(f"[ReferenceSourceService] Updating existing reference repo at '{target_dir}'...")
+                subprocess.run(['git', 'remote', 'set-url', 'origin', clone_url], cwd=target_dir, check=True)
+                subprocess.run(['git', 'fetch', 'origin'], cwd=target_dir, check=True)
+                subprocess.run(['git', 'checkout', branch], cwd=target_dir, capture_output=True)
+                subprocess.run(['git', 'reset', '--hard', f'origin/{branch}'], cwd=target_dir, capture_output=True)
+            else:
+                logger.info(f"[ReferenceSourceService] Cloning reference repo '{repo_url}' into '{target_dir}'...")
+                if os.path.exists(target_dir):
+                    shutil.rmtree(target_dir, ignore_errors=True)
+                clone_cmd = ['git', 'clone', '--depth', '50']
+                if branch:
+                    clone_cmd.extend(['-b', branch])
+                clone_cmd.extend([clone_url, target_dir])
+                try:
+                    subprocess.check_call(clone_cmd)
+                except subprocess.CalledProcessError:
+                    logger.warning(f"Branch '{branch}' not found on remote reference repo, falling back to default branch clone.")
+                    subprocess.check_call(['git', 'clone', '--depth', '50', clone_url, target_dir])
+        except Exception as e:
+            logger.error(f"[ReferenceSourceService] Failed to clone reference repo '{repo_url}': {e}")
+            return {"error": f"Failed to clone reference repository: {e}", "collection_name": collection_name}
+
+        # Get commit SHA
+        commit_sha = ""
+        try:
+            res = subprocess.run(['git', 'rev-parse', 'HEAD'], cwd=target_dir, capture_output=True, text=True)
+            commit_sha = res.stdout.strip()
+        except Exception:
+            pass
+
+        # Extract function references via AST & regex
+        functions = cls.extract_function_references(target_dir)
+
+        # Index into ChromaDB
+        rag = RagService.get_instance()
+        try:
+            collection = rag.client.get_collection(collection_name)
+        except Exception:
+            collection = rag.client.create_collection(
+                name=collection_name,
+                metadata={"hnsw:space": "cosine", "commit_sha": commit_sha, "repo_url": repo_url}
+            )
+
+        documents = []
+        metadatas = []
+        ids = []
+
+        for idx, func in enumerate(functions):
+            doc_text = f"Symbol: {func['symbol_name']} ({func['symbol_type']})\nSignature: {func['signature']}\nFile: {func['file_path']}\nDocstring: {func.get('docstring', '')}\nCode:\n{func['code']}"
+            documents.append(doc_text)
+            metadatas.append({
+                "symbol_name": func["symbol_name"],
+                "symbol_type": func["symbol_type"],
+                "signature": func["signature"],
+                "file_path": func["file_path"],
+                "language": func["language"],
+                "repo_url": repo_url
+            })
+            ids.append(f"{collection_name}_func_{idx}_{func['symbol_name']}")
+
+        if documents:
+            try:
+                # Upsert to avoid duplicate ID errors
+                collection.upsert(documents=documents, metadatas=metadatas, ids=ids)
+            except Exception as e:
+                logger.warning(f"[ReferenceSourceService] Collection upsert fallback to add: {e}")
+                try:
+                    collection.add(documents=documents, metadatas=metadatas, ids=ids)
+                except Exception:
+                    pass
+
+        logger.info(
+            f"[ReferenceSourceService] Indexed {len(functions)} AST function references "
+            f"from reference repo '{repo_url}' into collection '{collection_name}'"
+        )
+
+        return {
+            "repo_url": repo_url,
+            "branch": branch,
+            "commit_sha": commit_sha,
+            "collection_name": collection_name,
+            "total_functions": len(functions),
+            "functions": functions[:20]  # sample summary
+        }
+
+    @classmethod
+    def extract_function_references(cls, repo_dir: str) -> list:
+        """
+        Walks a repository and extracts function/class definitions, signatures, and docstrings
+        for Python, JavaScript, and TypeScript files using AST and regex parsing.
+        """
+        import ast
+        functions = []
+        skip_dirs = {'.git', 'venv', 'node_modules', '__pycache__', 'dist', 'build', '.idea', '.vscode'}
+
+        for root, dirs, files in os.walk(repo_dir):
+            dirs[:] = [d for d in dirs if d not in skip_dirs]
+            for file in files:
+                file_path = os.path.join(root, file)
+                rel_path = os.path.relpath(file_path, repo_dir).replace('\\', '/')
+
+                if file.endswith('.py'):
+                    cls._extract_python_ast(file_path, rel_path, functions)
+                elif file.endswith(('.js', '.jsx', '.ts', '.tsx')):
+                    cls._extract_js_ts_functions(file_path, rel_path, functions)
+
+        return functions
+
+    @classmethod
+    def _extract_python_ast(cls, file_path: str, rel_path: str, functions: list):
+        """Extract Python functions, classes, and routes via AST."""
+        import ast
+        try:
+            with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
+                code_text = f.read()
+
+            lines = code_text.splitlines()
+            tree = ast.parse(code_text, filename=rel_path)
+
+            for node in ast.walk(tree):
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    sig_args = [arg.arg for arg in node.args.args]
+                    sig = f"def {node.name}({', '.join(sig_args)}):"
+                    doc = ast.get_docstring(node) or ""
+                    start_line = node.lineno
+                    end_line = getattr(node, 'end_lineno', start_line + 20)
+                    body_code = "\n".join(lines[start_line - 1:end_line])
+
+                    functions.append({
+                        "symbol_name": node.name,
+                        "symbol_type": "function",
+                        "signature": sig,
+                        "docstring": doc,
+                        "file_path": rel_path,
+                        "code": body_code[:1500],
+                        "language": "python"
+                    })
+
+                elif isinstance(node, ast.ClassDef):
+                    sig = f"class {node.name}:"
+                    doc = ast.get_docstring(node) or ""
+                    start_line = node.lineno
+                    end_line = getattr(node, 'end_lineno', start_line + 30)
+                    body_code = "\n".join(lines[start_line - 1:end_line])
+
+                    functions.append({
+                        "symbol_name": node.name,
+                        "symbol_type": "class",
+                        "signature": sig,
+                        "docstring": doc,
+                        "file_path": rel_path,
+                        "code": body_code[:2000],
+                        "language": "python"
+                    })
+
+        except Exception as e:
+            logger.debug(f"[ReferenceSourceService] Could not parse Python AST for '{rel_path}': {e}")
+
+    @classmethod
+    def _extract_js_ts_functions(cls, file_path: str, rel_path: str, functions: list):
+        """Extract JavaScript / TypeScript functions, classes, and routes via regex pattern matching."""
+        try:
+            with open(file_path, 'r', encoding='utf-8', errors='replace') as f:
+                code_text = f.read()
+
+            lines = code_text.splitlines()
+
+            # Pattern for: function name(...), const name = (...), export function name(...)
+            js_func_pattern = re.compile(
+                r'(?:export\s+)?(?:async\s+)?function\s+([A-Za-z0-9_$]+)\s*\(([^)]*)\)|'
+                r'(?:export\s+)?const\s+([A-Za-z0-9_$]+)\s*=\s*(?:async\s+)?\(([^)]*)\)\s*=>|'
+                r'(?:router|app)\.(get|post|put|delete|patch)\s*\(\s*[\'\"]([^\'\"]+)[\'\"]'
+            )
+
+            for i, line in enumerate(lines):
+                match = js_func_pattern.search(line)
+                if match:
+                    func_name = match.group(1) or match.group(3) or f"{match.group(5).upper()} {match.group(6)}"
+                    args = match.group(2) or match.group(4) or ""
+                    symbol_type = "route" if match.group(5) else "function"
+                    sig = f"function {func_name}({args})" if symbol_type == "function" else f"{match.group(5).upper()} {match.group(6)}"
+
+                    snippet = "\n".join(lines[i:min(i + 25, len(lines))])
+
+                    functions.append({
+                        "symbol_name": func_name,
+                        "symbol_type": symbol_type,
+                        "signature": sig,
+                        "docstring": "",
+                        "file_path": rel_path,
+                        "code": snippet[:1500],
+                        "language": "javascript" if rel_path.endswith(('.js', '.jsx')) else "typescript"
+                    })
+
+        except Exception as e:
+            logger.debug(f"[ReferenceSourceService] Could not parse JS/TS functions for '{rel_path}': {e}")
+
+    @classmethod
+    def query_reference_kb(cls, collection_name: str, query: str, n_results: int = 6) -> list:
+        """
+        Query a reference knowledge base collection for relevant function signatures and code blueprints.
+        """
+        if not collection_name:
+            return []
+
+        try:
+            from app.services.rag_service import RagService
+            rag = RagService.get_instance()
+            try:
+                collection = rag.client.get_collection(collection_name)
+            except Exception:
+                return []
+
+            results = collection.query(query_texts=[query], n_results=min(n_results, 10))
+            docs = results.get('documents', [[]])[0]
+            metas = results.get('metadatas', [[]])[0]
+
+            out = []
+            for doc, meta in zip(docs, metas):
+                out.append({
+                    "symbol_name": meta.get("symbol_name", ""),
+                    "symbol_type": meta.get("symbol_type", "function"),
+                    "signature": meta.get("signature", ""),
+                    "file_path": meta.get("file_path", ""),
+                    "language": meta.get("language", ""),
+                    "repo_url": meta.get("repo_url", ""),
+                    "code_snippet": doc
+                })
+            return out
+        except Exception as e:
+            logger.warning(f"[ReferenceSourceService] Query reference KB failed for '{collection_name}': {e}")
+            return []
+
+

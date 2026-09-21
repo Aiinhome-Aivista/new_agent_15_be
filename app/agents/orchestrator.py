@@ -298,11 +298,18 @@ class Orchestrator:
             self._update_workflow_status(workflow, 'Failed', 'RepoAnalysis')
             return {"success": False, "stage": "repo_analysis", "error": repo_result.error, "results": results}
 
-        files_count = len(repo_result.output.get('files', [])) if isinstance(repo_result.output, dict) else '?'
+        files_count = len(repo_result.output.get('files_to_modify', [])) if isinstance(repo_result.output, dict) else '?'
+        ref_funcs_count = len(repo_result.output.get('reference_functions', [])) if isinstance(repo_result.output, dict) else 0
+        ref_url = repo_result.output.get('reference_repo_url') if isinstance(repo_result.output, dict) else ''
+
+        msg = f'✅ Repository Analysis complete — implementation map built ({files_count} files targeted)'
+        if ref_funcs_count > 0:
+            msg += f' | 📚 {ref_funcs_count} Reference Function blueprints loaded'
+
         log_event(story_id=story_id or 0, workflow_id=workflow_id,
                   agent='RepoAnalysis', level='success',
-                  message=f'✅ Repository Analysis complete — implementation map built',
-                  detail=f'{files_count} relevant files identified')
+                  message=msg,
+                  detail=f'Reference Repo: {ref_url}' if ref_url else f'{files_count} relevant files identified')
         implementation_map = repo_result.output
 
         # ═══════════════════════════════════════════════════════════

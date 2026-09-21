@@ -263,6 +263,20 @@ def create_story():
             repository_details[0]["url"] = repo_url
 
 
+    ref_repo_url = data.get('reference_repo_url') or data.get('ref_repo_url')
+    ref_repo_branch = data.get('reference_repo_branch') or data.get('ref_repo_branch') or 'main'
+
+    # Auto-extract from description if not passed explicitly
+    if not ref_repo_url and description:
+        import re
+        ref_match = re.search(
+            r'(?:Reference Repo|Reference Git|Ref Repo|Reference Link|Reference Code|Reference)\s*[:\-]?\s*(https?://github\.com/[^\s\)>\"\']+)',
+            f"{description}\n{acceptance_criteria}",
+            re.IGNORECASE
+        )
+        if ref_match:
+            ref_repo_url = ref_match.group(1).strip()
+
     story = Story(
         title=title,
         jira_story_key=jira_key,
@@ -272,6 +286,8 @@ def create_story():
         acceptance_criteria=acceptance_criteria,
         repository_details=repository_details,
         source_branch=data.get('source_branch'),
+        reference_repo_url=ref_repo_url,
+        reference_repo_branch=ref_repo_branch,
         assignee_id=data.get('assignee_id'),
         owner_id=request.current_user.id,
         status=status.upper() if status else 'TO-DO'
@@ -769,5 +785,44 @@ def download_story_evidence(story_id):
         return response
 
     return jsonify({"error": f"Unsupported format '{fmt}'. Supported: pdf, md, json"}), 400
+
+
+@stories_bp.route('/<int:story_id>/reference-functions', methods=['GET'])
+@require_auth
+def get_story_reference_functions(story_id):
+    """
+    Get harvested reference function blueprints and metadata for a story.
+    """
+    story = Story.query.get_or_404(story_id)
+    ref_url = story.reference_repo_url
+    meta = story.reference_repo_metadata or {}
+    col_name = meta.get('collection_name')
+
+    if not col_name and ref_url:
+        from app.services.token_secret_service import TokenSecretService
+        norm_name = TokenSecretService._normalise(ref_url)
+        slug = norm_name.split('/')[-1].replace('-', '_').replace('.', '_')
+        col_name = f"ref_kb_{slug}"
+
+    funcs = []
+    if col_name:
+        try:
+            from app.services.reference_source_service import ReferenceSourceService
+            funcs = ReferenceSourceService.query_reference_kb(
+                collection_name=col_name,
+                query=f"{story.title} {story.acceptance_criteria or ''}",
+                n_results=15
+            )
+        except Exception as e:
+            logger.warning(f"Could not query reference functions for story {story_id}: {e}")
+
+    return jsonify({
+        "story_id": story.id,
+        "reference_repo_url": ref_url,
+        "reference_repo_branch": story.reference_repo_branch,
+        "metadata": meta,
+        "functions_count": len(funcs),
+        "reference_functions": funcs
+    }), 200
 
 
