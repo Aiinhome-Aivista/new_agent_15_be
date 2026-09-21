@@ -278,14 +278,14 @@ class BranchPRAgent(BaseAgent):
                 subprocess.run(['git', 'checkout', branch_name], cwd=repo_dir, check=True)
                 subprocess.run(['git', 'pull', 'origin', branch_name], cwd=repo_dir, capture_output=True)
             else:
-                self.logger.info(f"Checking out base branch '{base_branch}' and creating '{branch_name}'")
-                subprocess.run(['git', 'checkout', base_branch], cwd=repo_dir, check=True)
-                subprocess.run(['git', 'pull', 'origin', base_branch], cwd=repo_dir, capture_output=True)
+                self.logger.info(f"Fetching latest origin/{base_branch} and creating '{branch_name}'")
+                subprocess.run(['git', 'fetch', 'origin', base_branch], cwd=repo_dir, check=True)
+                subprocess.run(['git', 'checkout', base_branch], cwd=repo_dir, capture_output=True)
+                subprocess.run(['git', 'reset', '--hard', f'origin/{base_branch}'], cwd=repo_dir, capture_output=True)
                 local_b = subprocess.run(['git', 'branch', '--list', branch_name], cwd=repo_dir, capture_output=True, text=True)
                 if branch_name in local_b.stdout:
-                    subprocess.run(['git', 'checkout', branch_name], cwd=repo_dir, check=True)
-                else:
-                    subprocess.run(['git', 'checkout', '-b', branch_name], cwd=repo_dir, check=True)
+                    subprocess.run(['git', 'branch', '-D', branch_name], cwd=repo_dir, capture_output=True)
+                subprocess.run(['git', 'checkout', '-b', branch_name, f'origin/{base_branch}'], cwd=repo_dir, check=True)
 
             # Apply real code changes directly to actual files
             for c in changes:

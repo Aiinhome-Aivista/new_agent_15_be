@@ -29,9 +29,12 @@ Implementation Notes: {implementation_notes}
 
 INSTRUCTIONS:
 1. STRICT REAL CODE MANDATE: Zero placeholders, zero ellipsis (...), zero mock comments (such as '# rest of code here'), and zero fictitious file names.
-2. If modifying existing files from the repository context (such as 'app/routes/users.py' and 'tests/test_users.py'), retain their EXACT file paths, structure, imports, and existing functions while integrating the new logic.
-3. For every file being created or modified, provide the `full_content` field containing the COMPLETE, 100% PRODUCTION-READY source code for the entire file.
-4. Strictly fulfill every Acceptance Criterion (e.g. validate email format with regex, return consistent HTTP 400 JSON errors, and add real pytest test cases covering valid, invalid, missing, and trimmed email formats).
+2. EXISTING API vs NEW API IMPLEMENTATION MANDATE:
+   - If modifying an existing file: You MUST preserve 100% of all preexisting endpoints, routes, helper functions, classes, imports, and docstrings. Do NOT omit or remove any preexisting code. Cleanly integrate the requested updates alongside existing code.
+   - If building a new API/feature: Create a new dedicated file/module (or cleanly register the new route) as indicated by the Implementation Map. DO NOT alter or wipe out existing APIs.
+   - DELETION RULE: Never delete or remove any preexisting functions or routes unless the story Acceptance Criteria explicitly and specifically commands their deprecation/deletion.
+3. For every file being created or modified, provide the `full_content` field containing the COMPLETE, 100% PRODUCTION-READY source code for the entire file (including all preserved existing code).
+4. Strictly fulfill every Acceptance Criterion and add real automated test cases covering valid scenarios, error handling, edge cases, and regression checks.
 5. ALWAYS update (or create) the target repository's README.md with a `## Changelog & Recent Updates` entry detailing the feature, new endpoints/components, and usage examples.
 
 Respond in this exact JSON format:
@@ -177,8 +180,8 @@ class DeveloperAgent(BaseAgent):
             summary = parsed.get('summary', '')
             changes = parsed.get('changes', [])
 
-            # Write changes directly to isolated disk workspace
-            import os
+            # Write changes directly to isolated disk workspace with Code Preservation Guard
+            import os, re
             repo_dir = impl_map.get('repo_dir') or context.get('workspace_dir')
             if repo_dir and os.path.exists(repo_dir):
                 for c in changes:
@@ -191,11 +194,29 @@ class DeveloperAgent(BaseAgent):
                         if os.path.exists(full_p):
                             try:
                                 os.remove(full_p)
+                                self.logger.info(f"[DeveloperAgent] Deleted file per action: {rf}")
                             except Exception:
                                 pass
                     elif action in ('create', 'modify'):
                         cnt = c.get('full_content') or c.get('code_snippet')
                         if cnt:
+                            # ── Preservation Guard for existing files ──
+                            if action == 'modify' and os.path.exists(full_p) and rf.endswith(('.py', '.js', '.ts')):
+                                try:
+                                    with open(full_p, 'r', encoding='utf-8', errors='replace') as f_old:
+                                        old_text = f_old.read()
+                                    if rf.endswith('.py'):
+                                        old_defs = set(re.findall(r'(?:def|class)\s+([a-zA-Z0-9_]+)\s*[\(:]', old_text))
+                                        new_defs = set(re.findall(r'(?:def|class)\s+([a-zA-Z0-9_]+)\s*[\(:]', cnt))
+                                        missing_defs = old_defs - new_defs
+                                        if missing_defs:
+                                            self.logger.warning(
+                                                f"[DeveloperAgent] Preservation Notice: Function/class definitions {missing_defs} "
+                                                f"not found in updated {rf}. Verifying story scope."
+                                            )
+                                except Exception as guard_err:
+                                    self.logger.warning(f"[DeveloperAgent] Preservation check warning: {guard_err}")
+
                             os.makedirs(os.path.dirname(full_p), exist_ok=True)
                             with open(full_p, 'w', encoding='utf-8') as f:
                                 f.write(cnt)
@@ -269,111 +290,8 @@ class DeveloperAgent(BaseAgent):
             )
 
         except Exception as e:
-            self.logger.warning(f"DeveloperAgent LLM error, using repository-aware code generation: {e}")
-            iter_note = f" (Refined on iteration {loop_iteration} addressing validation feedback)" if loop_iteration > 1 else ""
-            
-            repo_files = impl_map.get('repo_files', {})
-            base_user_route = repo_files.get('app/routes/users.py', '')
-            
-            # Real code implementation adhering strictly to python_devva_api structure
-            updated_users_py = (
-                "from flask import Blueprint, jsonify, request\n"
-                "import re\n"
-                "from app.services.user_service import UserService\n\n"
-                "users_bp = Blueprint(\"users\", __name__, url_prefix=\"/users\")\n\n"
-                "EMAIL_REGEX = r'^[a-zA-Z0-9_.+-]+@[a-zA-Z0-9-]+\\.[a-zA-Z0-9-.]+$'\n\n\n"
-                "@users_bp.route(\"\", methods=[\"POST\"], strict_slashes=False)\n"
-                "def create_user():\n"
-                "    \"\"\"\n"
-                "    POST /users\n"
-                "    Register/create a new user with email format validation.\n"
-                "    \"\"\"\n"
-                "    data = request.get_json(silent=True)\n"
-                "    if data is None:\n"
-                "        return jsonify({\"error\": \"Request payload must be valid JSON\"}), 400\n\n"
-                "    raw_email = data.get(\"email\")\n"
-                "    email = raw_email.strip() if isinstance(raw_email, str) else \"\"\n"
-                "    if not email:\n"
-                "        return jsonify({\"error\": \"Email is required\"}), 400\n\n"
-                "    if not re.match(EMAIL_REGEX, email):\n"
-                "        return jsonify({\"error\": \"Invalid email format\"}), 400\n\n"
-                "    data[\"email\"] = email\n"
-                "    user, error = UserService.create_user(data)\n"
-                "    if error:\n"
-                "        status_code = 409 if \"already exists\" in error else 400\n"
-                "        return jsonify({\"error\": error}), status_code\n\n"
-                "    return jsonify(user), 201\n"
-            )
-
-            updated_tests_py = (
-                "import pytest\n"
-                "from run import app\n\n"
-                "@pytest.fixture\n"
-                "def client():\n"
-                "    app.config['TESTING'] = True\n"
-                "    with app.test_client() as client:\n"
-                "        yield client\n\n"
-                "def test_create_user_valid_email(client):\n"
-                "    \"\"\"AC1: Valid email creates user successfully\"\"\"\n"
-                "    res = client.post('/users', json={'name': 'Valid User', 'email': 'user@example.com'})\n"
-                "    assert res.status_code in (200, 201)\n"
-                "    data = res.get_json()\n"
-                "    assert data.get('email') == 'user@example.com'\n\n"
-                "def test_create_user_invalid_email(client):\n"
-                "    \"\"\"AC2: Invalid email returns 400 Bad Request\"\"\"\n"
-                "    for bad_email in ['john', 'john@', '@example.com', 'john@example', 'john example@gmail.com']:\n"
-                "        res = client.post('/users', json={'name': 'User', 'email': bad_email})\n"
-                "        assert res.status_code == 400\n"
-                "        assert 'error' in res.get_json()\n\n"
-                "def test_create_user_missing_email(client):\n"
-                "    \"\"\"AC3: Missing email returns 400 Bad Request\"\"\"\n"
-                "    res = client.post('/users', json={'name': 'User'})\n"
-                "    assert res.status_code == 400\n"
-                "    assert 'error' in res.get_json()\n\n"
-                "def test_create_user_whitespace_email(client):\n"
-                "    \"\"\"AC4: Whitespace trimmed email\"\"\"\n"
-                "    res = client.post('/users', json={'name': 'User', 'email': '  trimmed@example.com  '})\n"
-                "    assert res.status_code in (200, 201)\n"
-            )
-
-            # Write fallback changes to isolated disk workspace if exists
-            import os
-            repo_dir = impl_map.get('repo_dir') or context.get('workspace_dir')
-            fallback_changes = [
-                {
-                    "file": "app/routes/users.py",
-                    "action": "modify",
-                    "description": "Implement RFC email validation in POST /users endpoint conforming to repository structure.",
-                    "code_snippet": "if not re.match(EMAIL_REGEX, email): return jsonify({'error': 'Invalid email format'}), 400",
-                    "full_content": updated_users_py,
-                    "satisfies_criteria": ["AC1", "AC2", "AC3", "AC4", "AC6", "AC7"]
-                },
-                {
-                    "file": "tests/test_users.py",
-                    "action": "modify",
-                    "description": "Add comprehensive automated test suite testing valid, invalid, missing, and trimmed email formats.",
-                    "code_snippet": "def test_create_user_valid_email(client): ...",
-                    "full_content": updated_tests_py,
-                    "satisfies_criteria": ["AC1", "AC2", "AC3", "AC4", "AC5", "AC6", "AC7"]
-                }
-            ]
-            if repo_dir and os.path.exists(repo_dir):
-                for c in fallback_changes:
-                    rf = c.get('file')
-                    if rf and c.get('full_content'):
-                        full_p = os.path.join(repo_dir, rf)
-                        os.makedirs(os.path.dirname(full_p), exist_ok=True)
-                        with open(full_p, 'w', encoding='utf-8') as f:
-                            f.write(c.get('full_content'))
-
+            self.logger.error(f"DeveloperAgent code generation failed: {e}")
             return AgentResult(
-                success=True,
-                output={
-                    "summary": f"Generated production-ready code implementation for '{title}' satisfying all acceptance criteria (AC1-AC7){iter_note}.",
-                    "changes": fallback_changes,
-                    "total_files_changed": 2,
-                    "ready_for_validation": True,
-                    "loop_iteration": loop_iteration,
-                    "repo_dir": repo_dir
-                }
+                success=False,
+                error=f"DeveloperAgent failed to generate code for '{title}': {e}"
             )

@@ -19,9 +19,10 @@ Changes Made:
 {changes_list}
 
 GUIDANCE FOR VALIDATION:
-1. Verify whether the new functionality requested in the story (e.g. email format validation with regex, 400 Bad Request error responses, and test cases) has been implemented in the code.
-2. For criteria regarding 'preserving existing functionality': as long as existing endpoints/functions were not removed or broken, consider this satisfied. Do NOT penalize the developer for not modifying unaffected features.
-3. If the code correctly implements the requested functionality and includes automated tests, mark `passed: true`.
+1. Verify whether the new functionality requested in the story acceptance criteria has been completely and correctly implemented in the code.
+2. PRESERVATION & REGRESSION: Verify that preexisting endpoints, routes, methods, and functions were NOT deleted, truncated, or broken. If a new API was requested, verify that existing APIs remain untouched.
+3. Automated Tests: Confirm that appropriate automated test cases covering valid, invalid, and edge cases are included.
+4. If all Acceptance Criteria are met, code preservation is upheld, and tests are present, mark `passed: true`. Otherwise mark `passed: false` and provide clear, actionable feedback.
 
 Respond in this exact JSON format:
 {{
@@ -146,14 +147,10 @@ You MUST specifically confirm whether these previously-rejected issues have been
                 if total_criteria > 0 and satisfied_count == total_criteria:
                     passed = True
                     parsed['passed'] = True
-                elif has_route_change and has_test_change:
-                    if total_criteria == 0 or (satisfied_count >= total_criteria * 0.5):
-                        passed = True
-                        parsed['passed'] = True
-                        parsed['feedback_for_developer'] = ''
+                    parsed['feedback_for_developer'] = ''
                 elif loop_iteration >= 2:
                     gaps = parsed.get('gaps', [])
-                    if len(gaps) == 0 or (total_criteria > 0 and satisfied_count >= total_criteria * 0.5):
+                    if len(gaps) == 0 and total_criteria > 0 and satisfied_count >= total_criteria * 0.8:
                         passed = True
                         parsed['passed'] = True
                         parsed['feedback_for_developer'] = ''
@@ -207,18 +204,16 @@ You MUST specifically confirm whether these previously-rejected issues have been
             )
 
         except Exception as e:
-            self.logger.warning(f"ValidatorAgent LLM error, using rule-based validation fallback: {e}")
+            self.logger.error(f"ValidatorAgent LLM evaluation failed: {e}")
             return AgentResult(
-                success=True,
+                success=False,
                 output={
-                    "passed": True,
-                    "criteria_results": [
-                        {"criterion": "All acceptance criteria verified", "satisfied": True, "evidence": "Verified against developer implementation map"}
-                    ],
-                    "gaps": [],
-                    "feedback_for_developer": "",
-                    "validation_confidence": "high",
+                    "passed": False,
+                    "criteria_results": [],
+                    "gaps": [f"ValidatorAgent error: {e}"],
+                    "feedback_for_developer": f"Validation execution failed: {e}",
+                    "validation_confidence": "low",
                     "loop_iteration": loop_iteration
                 },
-                error=None
+                error=f"ValidatorAgent evaluation failed: {e}"
             )

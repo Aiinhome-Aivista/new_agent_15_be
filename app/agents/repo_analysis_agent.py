@@ -17,18 +17,25 @@ Source Branch: {source_branch}
 REPOSITORIES:
 {repository_details}
 
-Your job is to identify EXACTLY what files/modules need to be created or modified.
+CRITICAL ARCHITECTURAL RULES:
+1. EXISTING API vs NEW API SEPARATION:
+   - Check if the endpoints, routes, or features requested in the Acceptance Criteria already exist in the repository.
+   - If an existing API/endpoint is specifically requested to be altered by the Acceptance Criteria: set action to "modify", and instruct the developer to retain all other existing functions/endpoints untouched.
+   - If the requested API/endpoint DOES NOT exist in the repository: set action to "create" with a new dedicated file (e.g., a new route, controller, or module) or specify clean addition without touching existing endpoints.
+   - DO NOT modify or overwrite existing files/APIs unless the Acceptance Criteria explicitly demands changes to them.
+2. PRESERVATION MANDATE: Zero unauthorized deletions. All preexisting routes, models, and utility functions must remain fully intact.
 
 Respond in this exact JSON format:
 {{
   "context_summary": "Brief description of what this story is building and the technical approach",
+  "api_classification": "existing_api_modification|new_api_creation|hybrid",
   "files_to_modify": [
-    {{"file": "path/to/file.py", "action": "create|modify|delete", "reason": "Why this file needs to change"}}
+    {{"file": "path/to/file.py", "action": "create|modify|delete", "reason": "Why this file needs to change and how existing code is preserved"}}
   ],
   "patterns_found": [
     "Description of any existing code patterns that should be followed"
   ],
-  "implementation_notes": "Key technical decisions and constraints the Developer Agent must follow",
+  "implementation_notes": "Key technical decisions and constraints the Developer Agent must follow, including strict preservation of existing APIs",
   "estimated_complexity": "low|medium|high"
 }}
 
@@ -127,7 +134,7 @@ class RepoAnalysisAgent(BaseAgent):
                     subprocess.run(['git', 'remote', 'set-url', 'origin', clone_url], cwd=repo_dir, check=True)
                     subprocess.run(['git', 'fetch', 'origin'], cwd=repo_dir, check=True)
                     subprocess.run(['git', 'checkout', target_branch], cwd=repo_dir, capture_output=True)
-                    subprocess.run(['git', 'pull', 'origin', target_branch], cwd=repo_dir, capture_output=True)
+                    subprocess.run(['git', 'reset', '--hard', f'origin/{target_branch}'], cwd=repo_dir, capture_output=True)
                 else:
                     self.logger.info(f"Cloning repository into isolated workspace '{repo_dir}'...")
                     if os.path.exists(repo_dir):
@@ -243,23 +250,8 @@ analysis on files, dependencies, and architectural patterns relevant to resolvin
             )
 
         except Exception as e:
-            self.logger.warning(f"RepoAnalysisAgent LLM error, using heuristic fallback: {e}")
+            self.logger.error(f"RepoAnalysisAgent analysis failed: {e}")
             return AgentResult(
-                success=True,
-                output={
-                    "context_summary": f"Implementation analysis for {title}",
-                    "files_to_modify": [
-                        {"file": "app/routes/users.py", "action": "modify", "reason": "Add email validation logic to POST /users endpoint"},
-                        {"file": "tests/test_users.py", "action": "modify", "reason": "Add automated test cases for valid and invalid email formats"}
-                    ],
-                    "patterns_found": ["Flask Blueprint route validation", "Standard HTTP error responses"],
-                    "implementation_notes": "Validate email presence and format before creating user. Return 400 Bad Request on invalid format.",
-                    "estimated_complexity": "low",
-                    "repo_files": repo_files_map,
-                    "workspace_dir": workspace_dir if 'workspace_dir' in locals() else '',
-                    "repo_dir": repo_dir if 'repo_dir' in locals() else '',
-                    "commit_sha": commit_sha if 'commit_sha' in locals() else '',
-                    "base_collection": base_col.name if 'base_col' in locals() and base_col else '',
-                    "overlay_collection": overlay_col.name if 'overlay_col' in locals() and overlay_col else '',
-                }
+                success=False,
+                error=f"RepoAnalysisAgent failed to analyze repository and requirements: {e}"
             )

@@ -152,15 +152,25 @@ def submit_qa_decision(story_id):
     # Delegate to approve/reject endpoints via internal logic
     github_merge_result = None
     if decision == 'approved':
-        # Execute real GitHub merge to main branch
+        # Execute real GitHub merge to target base branch
         if pr.pr_number:
             try:
                 from app.services.github_service import GitHubService
                 from flask import current_app
                 repo_url = pr.pr_url.split('/pull/')[0] if (pr.pr_url and '/pull/' in pr.pr_url) else current_app.config.get('GITHUB_BASE_URL', '')
                 gh_service = GitHubService.from_app_config(repo_url)
+                
+                # Determine base branch
+                base_branch = current_app.config.get('GITHUB_DEFAULT_BASE_BRANCH', 'main')
+                repo_details = getattr(story, 'repository_details', None)
+                if isinstance(repo_details, list) and len(repo_details) > 0 and isinstance(repo_details[0], dict):
+                    base_branch = repo_details[0].get('branch') or base_branch
+                if getattr(story, 'source_branch', None):
+                    base_branch = str(story.source_branch).strip()
+
                 commit_title = f"feat({story.jira_story_key or f'STORY-{story.id}'}): {story.title} (PR #{pr.pr_number})"
                 commit_msg = f"Approved by QA Reviewer #{request.current_user.id}.\nDEVAA Automated Implementation."
+
                 github_merge_result = gh_service.merge_pr(
                     repo_url=repo_url,
                     pr_number=pr.pr_number,
@@ -168,13 +178,64 @@ def submit_qa_decision(story_id):
                     commit_message=commit_msg,
                     merge_method="squash"
                 )
-                if github_merge_result.get("merged"):
-                    logger.info(f"[QA] Successfully merged PR #{pr.pr_number} into target base branch on GitHub.")
-                else:
-                    logger.warning(f"[QA] GitHub merge was not completed: {github_merge_result.get('error')}")
+
+                # Option 1: Auto-rebase / sync if merge conflicts or head behind
+                if not github_merge_result.get("merged") and (
+                    github_merge_result.get("status_code") in (405, 409) or
+                    "conflict" in str(github_merge_result.get("error", "")).lower()
+                ):
+                    logger.info(f"[QA] Merge conflict or block detected for PR #{pr.pr_number}. Attempting auto-sync with base '{base_branch}'...")
+                    sync_res = gh_service.sync_feature_branch_with_base(
+                        repo_url=repo_url,
+                        branch_name=pr.branch_name,
+                        base_branch=base_branch
+                    )
+                    if sync_res.get("success"):
+                        logger.info(f"[QA] Auto-sync succeeded! Retrying squash merge for PR #{pr.pr_number}...")
+                        github_merge_result = gh_service.merge_pr(
+                            repo_url=repo_url,
+                            pr_number=pr.pr_number,
+                            commit_title=commit_title,
+                            commit_message=commit_msg,
+                            merge_method="squash"
+                        )
+
+                # ── CRITICAL GUARD (Suggestion C): Block false merges ──
+                if not github_merge_result.get("merged"):
+                    err_msg = github_merge_result.get("error", "Merge failed on GitHub")
+                    logger.warning(f"[QA] Merge blocked for PR #{pr.pr_number}: {err_msg}")
+                    
+                    try:
+                        from app.models.devaa_models import PipelineLog
+                        p_log = PipelineLog(
+                            story_id=story_id,
+                            workflow_id=pr.workflow_id,
+                            agent='QA Reviewer',
+                            level='error',
+                            message=f"❌ Merge Blocked on GitHub: {err_msg}. PR #{pr.pr_number} remains open."
+                        )
+                        db.session.add(p_log)
+                        db.session.commit()
+                    except Exception:
+                        pass
+
+                    return jsonify({
+                        "error": f"Merge failed on GitHub: {err_msg}",
+                        "details": "Pull Request could not be merged into the base branch (likely due to merge conflicts or branch protection). Story remains in QA-TESTING.",
+                        "story_id": story_id,
+                        "pr_number": pr.pr_number,
+                        "pr_url": pr.pr_url,
+                        "can_resync": True
+                    }), 409
+
+                logger.info(f"[QA] Successfully merged PR #{pr.pr_number} into target base branch on GitHub.")
             except Exception as gh_err:
                 logger.error(f"[QA] Error calling GitHub merge API: {gh_err}")
-                github_merge_result = {"merged": False, "error": str(gh_err)}
+                return jsonify({
+                    "error": f"GitHub API error during merge: {gh_err}",
+                    "story_id": story_id,
+                    "pr_number": pr.pr_number
+                }), 500
 
         pr.pr_status = 'merged'
         from datetime import datetime
@@ -197,13 +258,8 @@ def submit_qa_decision(story_id):
         # Live pipeline log for merge
         try:
             from app.models.devaa_models import PipelineLog
-            if github_merge_result and github_merge_result.get("merged"):
-                msg = f"🔀 GitHub PR #{pr.pr_number} successfully merged into main branch."
-                lvl = 'success'
-            else:
-                msg = f"⚠️ GitHub PR #{pr.pr_number} merge note: {github_merge_result.get('error') if github_merge_result else 'No remote PR'}"
-                lvl = 'warning'
-            p_log = PipelineLog(story_id=story_id, workflow_id=pr.workflow_id, agent='QA Reviewer', level=lvl, message=msg)
+            msg = f"🔀 GitHub PR #{pr.pr_number} successfully merged into main branch."
+            p_log = PipelineLog(story_id=story_id, workflow_id=pr.workflow_id, agent='QA Reviewer', level='success', message=msg)
             db.session.add(p_log)
         except Exception:
             pass
@@ -317,3 +373,44 @@ def trigger_rework(story_id):
     except Exception as e:
         logger.exception(f"Rework orchestrator failed: {e}")
         return jsonify({"error": str(e), "workflow_id": workflow.id}), 500
+
+
+@qa_bp.route('/<int:story_id>/resync', methods=['POST'])
+@require_auth
+@require_role(['QA Reviewer', 'Product Owner', 'Admin'])
+def resync_story_branch(story_id):
+    """
+    On-demand Re-sync / Rebase endpoint (Option 1):
+    Syncs the story's open feature branch with the latest base branch (e.g. main).
+    """
+    story = Story.query.get_or_404(story_id)
+    pr = PullRequest.query.filter_by(story_id=story_id, pr_status='open').first()
+    if not pr:
+        return jsonify({"error": "No open PR found for this story."}), 404
+
+    from app.services.github_service import GitHubService
+    from flask import current_app
+    repo_url = pr.pr_url.split('/pull/')[0] if (pr.pr_url and '/pull/' in pr.pr_url) else current_app.config.get('GITHUB_BASE_URL', '')
+    gh_service = GitHubService.from_app_config(repo_url)
+
+    base_branch = current_app.config.get('GITHUB_DEFAULT_BASE_BRANCH', 'main')
+    repo_details = getattr(story, 'repository_details', None)
+    if isinstance(repo_details, list) and len(repo_details) > 0 and isinstance(repo_details[0], dict):
+        base_branch = repo_details[0].get('branch') or base_branch
+    if getattr(story, 'source_branch', None):
+        base_branch = str(story.source_branch).strip()
+
+    sync_result = gh_service.sync_feature_branch_with_base(
+        repo_url=repo_url,
+        branch_name=pr.branch_name,
+        base_branch=base_branch
+    )
+
+    status_code = 200 if sync_result.get('success') else 409
+    return jsonify({
+        "story_id": story_id,
+        "branch_name": pr.branch_name,
+        "base_branch": base_branch,
+        "sync_result": sync_result
+    }), status_code
+

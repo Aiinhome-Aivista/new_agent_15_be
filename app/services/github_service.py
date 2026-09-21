@@ -260,6 +260,114 @@ class GitHubService:
                 break
         return results
 
+    def get_pr_details(self, repo_url: str, pr_number: int) -> dict:
+        """Fetch real-time PR details including mergeable status and branch info from GitHub."""
+        org, repo_name = self._parse_repo(repo_url)
+        if not org or not repo_name:
+            return {}
+        url = f"https://api.github.com/repos/{org}/{repo_name}/pulls/{pr_number}"
+        try:
+            resp = requests.get(url, headers=self._headers, timeout=15)
+            if resp.status_code == 200:
+                data = resp.json()
+                return {
+                    "pr_number": pr_number,
+                    "title": data.get("title"),
+                    "state": data.get("state"),
+                    "mergeable": data.get("mergeable"),
+                    "mergeable_state": data.get("mergeable_state"),
+                    "head_branch": data.get("head", {}).get("ref"),
+                    "base_branch": data.get("base", {}).get("ref"),
+                    "html_url": data.get("html_url"),
+                }
+            logger.error(f"Failed to fetch PR details #{pr_number}: {resp.status_code} {resp.text[:200]}")
+        except Exception as e:
+            logger.error(f"Exception fetching PR details #{pr_number}: {e}")
+        return {}
+
+    def sync_feature_branch_with_base(self, repo_url: str, branch_name: str, base_branch: str, workspace_dir: str = None) -> dict:
+        """
+        Auto-rebase / sync helper (Option 1):
+        Fetches latest base branch from remote, merges it into the feature branch,
+        and pushes to remote if clean.
+        Returns dict with keys: 'success' (bool), 'status' (str), 'conflicting_files' (list), 'message' (str).
+        """
+        import subprocess, os
+        org, repo_name = self._parse_repo(repo_url)
+        if not org or not repo_name:
+            return {"success": False, "status": "error", "conflicting_files": [], "message": f"Could not parse repo from {repo_url}"}
+
+        # Resolve repo path
+        repo_dir = None
+        if workspace_dir and os.path.exists(os.path.join(workspace_dir, '.git')):
+            repo_dir = workspace_dir
+        elif workspace_dir and os.path.exists(os.path.join(workspace_dir, repo_name, '.git')):
+            repo_dir = os.path.join(workspace_dir, repo_name)
+        else:
+            from flask import current_app
+            repos_root = os.path.abspath(os.path.join(current_app.root_path, '..', 'repos'))
+            candidate = os.path.join(repos_root, repo_name)
+            if os.path.exists(os.path.join(candidate, '.git')):
+                repo_dir = candidate
+
+        if not repo_dir:
+            return {"success": False, "status": "error", "conflicting_files": [], "message": "Local repository directory not found for sync."}
+
+        try:
+            logger.info(f"[GitHubService] Starting auto-sync for branch '{branch_name}' with 'origin/{base_branch}' in {repo_dir}")
+            # Ensure git user identity
+            subprocess.run(['git', 'config', 'user.name', 'DEVAA Bot'], cwd=repo_dir, check=True)
+            subprocess.run(['git', 'config', 'user.email', 'devaa-bot@users.noreply.github.com'], cwd=repo_dir, check=True)
+
+            # Fetch latest base branch and feature branch
+            subprocess.run(['git', 'fetch', 'origin', base_branch], cwd=repo_dir, check=True)
+            subprocess.run(['git', 'fetch', 'origin', branch_name], cwd=repo_dir, check=True)
+            subprocess.run(['git', 'checkout', branch_name], cwd=repo_dir, check=True)
+            subprocess.run(['git', 'pull', 'origin', branch_name], cwd=repo_dir, capture_output=True)
+
+            # Attempt merge
+            merge_cmd = ['git', 'merge', f'origin/{base_branch}', '-m', f"chore(sync): auto-merge latest origin/{base_branch} into {branch_name}"]
+            merge_res = subprocess.run(merge_cmd, cwd=repo_dir, capture_output=True, text=True)
+
+            if merge_res.returncode == 0:
+                # Clean merge! Push to remote
+                push_res = subprocess.run(['git', 'push', 'origin', branch_name], cwd=repo_dir, capture_output=True, text=True)
+                if push_res.returncode == 0:
+                    logger.info(f"[GitHubService] Successfully synced '{branch_name}' with latest 'origin/{base_branch}'.")
+                    return {
+                        "success": True,
+                        "status": "synced_cleanly",
+                        "conflicting_files": [],
+                        "message": f"Successfully synced branch '{branch_name}' with latest '{base_branch}'."
+                    }
+                else:
+                    return {
+                        "success": False,
+                        "status": "push_failed",
+                        "conflicting_files": [],
+                        "message": f"Git push failed after merge: {push_res.stderr.strip()}"
+                    }
+            else:
+                # Merge conflict detected
+                conflict_res = subprocess.run(['git', 'diff', '--name-only', '--diff-filter=U'], cwd=repo_dir, capture_output=True, text=True)
+                conflicting_files = [f.strip() for f in conflict_res.stdout.splitlines() if f.strip()]
+                # Abort the conflicting merge in the local repo to keep it clean
+                subprocess.run(['git', 'merge', '--abort'], cwd=repo_dir, capture_output=True)
+                logger.warning(f"[GitHubService] Merge conflict detected between '{branch_name}' and 'origin/{base_branch}': {conflicting_files}")
+                return {
+                    "success": False,
+                    "status": "conflict",
+                    "conflicting_files": conflicting_files,
+                    "message": f"Merge conflict with '{base_branch}' in files: {', '.join(conflicting_files)}"
+                }
+        except Exception as e:
+            logger.exception(f"[GitHubService] Exception during auto-sync: {e}")
+            try:
+                subprocess.run(['git', 'merge', '--abort'], cwd=repo_dir, capture_output=True)
+            except Exception:
+                pass
+            return {"success": False, "status": "error", "conflicting_files": [], "message": str(e)}
+
     @staticmethod
     def _parse_repo(repo_url: str):
         """Extract (org, repo_name) from a GitHub repo URL. Returns (None, None) on failure."""
