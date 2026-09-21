@@ -382,7 +382,7 @@ class ReferenceSourceService:
         os.makedirs(ref_repos_dir, exist_ok=True)
         target_dir = os.path.join(ref_repos_dir, repo_slug)
 
-        token = TokenSecretService.get_token_for_repo(repo_url)
+        token = TokenSecretService.get_token_for_repo(repo_url, is_reference=True)
         clone_url = repo_url
         if token and "github.com" in repo_url:
             clone_url = repo_url.replace("https://github.com/", f"https://x-access-token:{token}@github.com/")

@@ -37,11 +37,18 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 # Path to the secret tokens file (relative to backend root)
-_TOKENS_FILE = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-    "config",
-    "repo_tokens.json"
-)
+def _get_tokens_file_path() -> Optional[str]:
+    """Resolve repo_tokens.json across backend config, backend root, or workspace root."""
+    base_be = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+    candidates = [
+        os.path.join(base_be, "config", "repo_tokens.json"),
+        os.path.join(base_be, "repo_tokens.json"),
+        os.path.abspath(os.path.join(base_be, "..", "repo_tokens.json"))
+    ]
+    for p in candidates:
+        if os.path.exists(p):
+            return p
+    return None
 
 _tokens_cache: Optional[dict] = None
 
@@ -52,16 +59,17 @@ def _load_tokens() -> dict:
     if _tokens_cache is not None:
         return _tokens_cache
 
-    if not os.path.exists(_TOKENS_FILE):
+    tokens_file = _get_tokens_file_path()
+    if not tokens_file:
         logger.debug(
-            f"TokenSecretService: repo_tokens.json not found at {_TOKENS_FILE}. "
+            "TokenSecretService: repo_tokens.json not found in candidate paths. "
             "Using GITHUB_TOKEN from .env as fallback."
         )
         _tokens_cache = {}
         return _tokens_cache
 
     try:
-        with open(_TOKENS_FILE, "r", encoding="utf-8") as f:
+        with open(tokens_file, "r", encoding="utf-8") as f:
             data = json.load(f)
         _tokens_cache = data if isinstance(data, dict) else {}
         logger.info(
@@ -155,15 +163,15 @@ class TokenSecretService:
         return None
 
     @staticmethod
-    def get_token_for_repo(repo_url_or_name: str) -> Optional[str]:
+    def get_token_for_repo(repo_url_or_name: str, is_reference: bool = False) -> Optional[str]:
         """
         Resolve the GitHub PAT for a given repository URL or name.
 
-        Resolution order:
-        1. Exact/normalised match in repositories dict (from dict or str)
+        Resolution order (Works 100% with or without repo_tokens.json):
+        1. Exact/normalised match in repositories dict in repo_tokens.json (if present)
         2. Environment variable for specific repo: GITHUB_TOKEN_<REPO_SLUG> (e.g. GITHUB_TOKEN_REFERENCE_STRUCTURE_API)
-        3. REFERENCE_GITHUB_TOKEN from environment if repo is reference
-        4. default_pat from repo_tokens.json
+        3. REFERENCE_GITHUB_TOKEN from environment if is_reference=True or 'reference' in repo URL
+        4. default_pat from repo_tokens.json (if present)
         5. GITHUB_TOKEN from Flask app config / environment variable
 
         Returns the resolved token string, or None if no token is configured.
@@ -183,8 +191,8 @@ class TokenSecretService:
                 logger.debug(f"TokenSecretService: Found token via environment variable '{env_specific_key}'")
                 return env_specific_token
 
-        # Check REFERENCE_GITHUB_TOKEN if repo name/url indicates reference
-        if repo_url_or_name and ("ref" in repo_url_or_name.lower() or "reference" in repo_url_or_name.lower()):
+        # Check REFERENCE_GITHUB_TOKEN if is_reference is True or URL indicates reference
+        if is_reference or (repo_url_or_name and ("ref" in repo_url_or_name.lower() or "reference" in repo_url_or_name.lower())):
             ref_env_token = os.environ.get("REFERENCE_GITHUB_TOKEN", "").strip()
             if ref_env_token:
                 logger.debug("TokenSecretService: Using REFERENCE_GITHUB_TOKEN from environment variable")
