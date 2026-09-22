@@ -1,4 +1,5 @@
 import logging
+import re
 from flask import current_app
 from app import db
 from app.models.story import Story
@@ -8,6 +9,40 @@ from app.services.task_providers.factory import TaskProviderFactory
 logger = logging.getLogger(__name__)
 
 class SyncService:
+
+    @staticmethod
+    def delete_story_and_relations(story_id: int) -> bool:
+        """
+        Cleanly removes a story and all related DB entities (logs, metrics, workflows, etc.).
+        """
+        try:
+            story = Story.query.get(story_id)
+            if not story:
+                return False
+
+            from app.models.devaa_models import PipelineLog, AuditLog, GuardrailEvent, SuccessMetric, QAReview, PullRequest
+            from app.models.workflow import Workflow, WorkflowStep
+
+            wf_ids = [w.id for w in Workflow.query.filter_by(story_id=story_id).all()]
+            if wf_ids:
+                WorkflowStep.query.filter(WorkflowStep.workflow_id.in_(wf_ids)).delete(synchronize_session=False)
+
+            PipelineLog.query.filter_by(story_id=story_id).delete(synchronize_session=False)
+            AuditLog.query.filter_by(story_id=story_id).delete(synchronize_session=False)
+            GuardrailEvent.query.filter_by(story_id=story_id).delete(synchronize_session=False)
+            SuccessMetric.query.filter_by(story_id=story_id).delete(synchronize_session=False)
+            QAReview.query.filter_by(story_id=story_id).delete(synchronize_session=False)
+            PullRequest.query.filter_by(story_id=story_id).delete(synchronize_session=False)
+            Workflow.query.filter_by(story_id=story_id).delete(synchronize_session=False)
+
+            db.session.delete(story)
+            db.session.commit()
+            logger.info(f"Successfully deleted story ID {story_id} and relations from database.")
+            return True
+        except Exception as e:
+            db.session.rollback()
+            logger.exception(f"Error deleting story {story_id}: {e}")
+            return False
 
     @staticmethod
     def sync_assigned_tasks(user_id: int, project_key: str = None) -> dict:
@@ -23,8 +58,9 @@ class SyncService:
         if not provider:
             return {"message": "No active external task provider configured. Skipping sync."}
 
+        provider_name = current_app.config.get('ACTIVE_TASK_PROVIDER', 'manual').lower()
         min_priority = current_app.config.get('MIN_SYNC_PRIORITY', 'all')
-        proj_key = (project_key or current_app.config.get('JIRA_PROJECT_KEY') or '').strip()
+        proj_key = (project_key or current_app.config.get('JIRA_PROJECT_KEY') or '').strip().upper()
         
         try:
             # Fetch tasks from external provider (Jira, etc.)
@@ -36,9 +72,10 @@ class SyncService:
             )
             
             created_count = 0
+            updated_count = 0
+            deleted_count = 0
             skipped_count = 0
 
-            import re
             default_base_branch = current_app.config.get('GITHUB_DEFAULT_BASE_BRANCH', 'main')
             default_repo_url = current_app.config.get('GITHUB_BASE_URL', '')
 
@@ -83,10 +120,10 @@ class SyncService:
                             if clean_desc:
                                 task_desc = clean_desc
 
-                if task_title and (task_title.lower().startswith('task ') or task_title.lower().startswith('scrum-')):
-                    t_match = re.search(r'(?:^|\n)\s*Title\s*:\s*([^\n\r]+)', raw_desc, re.IGNORECASE)
-                    if t_match and t_match.group(1).strip():
-                        task_title = t_match.group(1).strip()
+                # If raw description contains explicit "Title: ...", use it
+                t_match = re.search(r'(?:^|\n)\s*Title\s*:\s*([^\n\r]+)', raw_desc, re.IGNORECASE)
+                if t_match and t_match.group(1).strip():
+                    task_title = t_match.group(1).strip()
 
                 # ── Extract repository details from description if present ──
                 target_repo_name = "main-repo"
@@ -114,19 +151,31 @@ class SyncService:
                 if branch_m:
                     target_repo_branch = branch_m.group(1).strip().strip('`')
 
+                # Map external task status to DEVAA status
+                ext_status = (task.status or 'TO-DO').upper().replace(' ', '-')
+                if ext_status in ('DONE', 'COMPLETED', 'RESOLVED', 'CLOSED'):
+                    mapped_status = 'DONE'
+                elif ext_status in ('IN-PROGRESS', 'IN PROGRESS', 'DEVELOPMENT'):
+                    mapped_status = 'IN-PROGRESS'
+                elif ext_status in ('QA-TESTING', 'QA', 'IN-REVIEW', 'REVIEW'):
+                    mapped_status = 'QA-TESTING'
+                else:
+                    mapped_status = 'TO-DO'
+
                 if existing:
-                    # Update any missing or updated fields on existing story
+                    # Update any missing or modified fields on existing story
                     updated = False
                     if not existing.source_branch or (branch_m and existing.source_branch != target_repo_branch):
                         existing.source_branch = target_repo_branch
                         updated = True
-                    if task_desc and (not existing.description or existing.description != task_desc):
+                    if task_desc is not None and (existing.description or '') != task_desc:
                         existing.description = task_desc
                         updated = True
-                    if task_ac and (not existing.acceptance_criteria or existing.acceptance_criteria != task_ac):
+                    if task_ac is not None and (existing.acceptance_criteria or '') != task_ac:
                         existing.acceptance_criteria = task_ac
                         updated = True
-                    if (existing.title.lower().startswith('task ') or existing.title.lower().startswith('scrum-')) and task_title != existing.title:
+                    # Update title if changed in Jira
+                    if task_title and existing.title != task_title:
                         existing.title = task_title
                         updated = True
                     
@@ -161,23 +210,28 @@ class SyncService:
                             flag_modified(existing, 'repository_details')
                             updated = True
 
-                    ext_status = (task.status or '').upper().replace(' ', '-')
-                    if ext_status in ('DONE', 'COMPLETED', 'RESOLVED', 'CLOSED') and existing.status != 'DONE':
-                        existing.status = 'DONE'
-                        updated = True
+                    # Status sync: only update if no active pipeline workflow is currently executing
+                    from app.models.workflow import Workflow
+                    active_wf = Workflow.query.filter_by(story_id=existing.id, status='running').first()
+                    if not active_wf:
+                        if existing.status != mapped_status:
+                            existing.status = mapped_status
+                            updated = True
                     elif existing.status == 'INVALID':
                         existing.status = 'TO-DO'
                         updated = True
+
                     if updated:
                         try:
                             db.session.commit()
+                            updated_count += 1
                         except Exception as e:
                             db.session.rollback()
                             logger.warning(f"Could not update existing story {existing.id}: {e}")
-                    skipped_count += 1
+                            skipped_count += 1
+                    else:
+                        skipped_count += 1
                     continue
-                
-                provider_name = current_app.config.get('ACTIVE_TASK_PROVIDER', 'manual').lower()
 
                 repo_info = {
                     "name": target_repo_name,
@@ -188,17 +242,6 @@ class SyncService:
                 }
                 if task.due_date:
                     repo_info["due_date"] = task.due_date
-
-                # Map external task status to DEVAA status
-                ext_status = (task.status or 'TO-DO').upper().replace(' ', '-')
-                if ext_status in ('DONE', 'COMPLETED', 'RESOLVED', 'CLOSED'):
-                    mapped_status = 'DONE'
-                elif ext_status in ('IN-PROGRESS', 'IN PROGRESS', 'DEVELOPMENT'):
-                    mapped_status = 'IN-PROGRESS'
-                elif ext_status in ('QA-TESTING', 'QA', 'IN-REVIEW', 'REVIEW'):
-                    mapped_status = 'QA-TESTING'
-                else:
-                    mapped_status = 'TO-DO'
 
                 # Create a new local DEVAA Story based on the external task
                 new_story = Story(
@@ -222,10 +265,35 @@ class SyncService:
                     db.session.rollback()
                     logger.warning(f"Failed to insert story {task.external_id} (already exists or constraint violation): {insert_err}")
                     skipped_count += 1
+
+            # ── Check for stories in DEVAA that were deleted in Jira ──
+            if provider_name == 'jira':
+                from app.services.jira_service import JiraService
+                all_local_stories = Story.query.all()
+                for story in all_local_stories:
+                    key = (story.jira_story_key or story.external_task_id or '').strip()
+                    if not key:
+                        continue
+                    # Only check stories belonging to the target Jira project (e.g. SCRUM-...)
+                    if proj_key and not key.upper().startswith(f"{proj_key}-"):
+                        continue
+
+                    # If this story's key is NOT among active Jira tasks
+                    if key.lower() not in seen_keys:
+                        status_info = JiraService.check_issue_status(key)
+                        if status_info.get('status_code') == 404:
+                            logger.info(f"Story {key} (id={story.id}) was deleted from Jira (404). Pruning from DEVAA...")
+                            if SyncService.delete_story_and_relations(story.id):
+                                deleted_count += 1
+                        else:
+                            logger.debug(f"Story {key} not in fetch_tasks list, but check_issue_status returned status {status_info.get('status_code')}. Keeping.")
+
             return {
                 "message": "Sync completed successfully.",
                 "tasks_fetched": len(external_tasks),
                 "stories_created": created_count,
+                "stories_updated": updated_count,
+                "stories_deleted": deleted_count,
                 "stories_skipped": skipped_count
             }
         except Exception as e:
