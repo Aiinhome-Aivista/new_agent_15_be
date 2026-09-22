@@ -33,15 +33,31 @@ def create_app(config_class=Config):
     app.register_blueprint(admin_bp, url_prefix='/api/admin')
     app.register_blueprint(connectors_bp, url_prefix='/api/connectors')
 
-    # Ensure schema migrations like evidence_report column exist
+    # Ensure schema migrations like evidence_report and reference_repo columns exist
     with app.app_context():
         try:
-            from sqlalchemy import text
+            from sqlalchemy import text, inspect
             with db.engine.connect() as conn:
-                conn.execute(text("ALTER TABLE pull_requests ADD COLUMN evidence_report JSON NULL"))
+                inspector = inspect(db.engine)
+                existing_tables = inspector.get_table_names()
+
+                if 'pull_requests' in existing_tables:
+                    pr_cols = [c['name'] for c in inspector.get_columns('pull_requests')]
+                    if 'evidence_report' not in pr_cols:
+                        conn.execute(text("ALTER TABLE pull_requests ADD COLUMN evidence_report JSON NULL"))
+
+                if 'stories' in existing_tables:
+                    story_cols = [c['name'] for c in inspector.get_columns('stories')]
+                    if 'reference_repo_url' not in story_cols:
+                        conn.execute(text("ALTER TABLE stories ADD COLUMN reference_repo_url VARCHAR(500) NULL"))
+                    if 'reference_repo_branch' not in story_cols:
+                        conn.execute(text("ALTER TABLE stories ADD COLUMN reference_repo_branch VARCHAR(255) NULL"))
+                    if 'reference_repo_metadata' not in story_cols:
+                        conn.execute(text("ALTER TABLE stories ADD COLUMN reference_repo_metadata JSON NULL"))
+
                 conn.commit()
-        except Exception:
-            pass
+        except Exception as e:
+            app.logger.warning(f"Auto-migration column check warning: {e}")
 
     @app.route('/health')
     def health_check():
