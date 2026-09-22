@@ -34,15 +34,35 @@ class JiraService:
     @classmethod
     def get_issue(cls, jira_key: str) -> dict | None:
         """Fetch a Jira issue by key. Returns None if not configured or not found."""
+        status_info = cls.check_issue_status(jira_key)
+        return status_info.get('issue') if status_info.get('exists') else None
+
+    @classmethod
+    def check_issue_status(cls, jira_key: str) -> dict:
+        """
+        Check if an issue exists in Jira.
+        Returns:
+            {'exists': True, 'status_code': 200, 'issue': dict}
+            {'exists': False, 'status_code': 404, 'issue': None}
+            {'exists': False, 'status_code': <code>, 'issue': None, 'error': str}
+        """
         if not cls._is_configured():
-            logger.warning("Jira not configured. Skipping get_issue.")
-            return None
+            logger.warning("Jira not configured. Skipping check_issue_status.")
+            return {'exists': False, 'status_code': 0, 'issue': None, 'error': 'Jira not configured'}
         url = f"{cls._base()}/rest/api/3/issue/{jira_key}"
-        resp = requests.get(url, auth=cls._auth(), headers={"Accept": "application/json"})
-        if resp.status_code == 200:
-            return resp.json()
-        logger.error(f"Jira get_issue failed: {resp.status_code} {resp.text}")
-        return None
+        try:
+            resp = requests.get(url, auth=cls._auth(), headers={"Accept": "application/json"}, timeout=15)
+            if resp.status_code == 200:
+                return {'exists': True, 'status_code': 200, 'issue': resp.json()}
+            elif resp.status_code == 404:
+                return {'exists': False, 'status_code': 404, 'issue': None}
+            else:
+                logger.error(f"Jira check_issue_status for {jira_key} failed: {resp.status_code} {resp.text}")
+                return {'exists': False, 'status_code': resp.status_code, 'issue': None, 'error': resp.text}
+        except Exception as e:
+            logger.exception(f"Exception checking Jira issue status for {jira_key}: {e}")
+            return {'exists': False, 'status_code': 500, 'issue': None, 'error': str(e)}
+
 
     @classmethod
     def _text_to_adf(cls, text: str) -> list:

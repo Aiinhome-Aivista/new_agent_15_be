@@ -601,31 +601,13 @@ def delete_story(story_id):
             logger.exception(f"Error deleting Jira issue {jira_key}: {e}")
             jira_warning = f"Jira issue deletion exception: {str(e)}"
 
-    # Clean up DB relations referencing story_id before deleting story row
-    try:
-        from app.models.devaa_models import PipelineLog, AuditLog, GuardrailEvent, SuccessMetric, QAReview, PullRequest
-        from app.models.workflow import WorkflowStep
+    # Clean up DB relations referencing story_id and delete story row
+    story_title = story.title
+    success = SyncService.delete_story_and_relations(story_id)
+    if not success:
+        return jsonify({"error": f"Failed to delete story {story_id} from database."}), 500
 
-        wf_ids = [w.id for w in Workflow.query.filter_by(story_id=story_id).all()]
-        if wf_ids:
-            WorkflowStep.query.filter(WorkflowStep.workflow_id.in_(wf_ids)).delete(synchronize_session=False)
-
-        PipelineLog.query.filter_by(story_id=story_id).delete(synchronize_session=False)
-        AuditLog.query.filter_by(story_id=story_id).delete(synchronize_session=False)
-        GuardrailEvent.query.filter_by(story_id=story_id).delete(synchronize_session=False)
-        SuccessMetric.query.filter_by(story_id=story_id).delete(synchronize_session=False)
-        QAReview.query.filter_by(story_id=story_id).delete(synchronize_session=False)
-        PullRequest.query.filter_by(story_id=story_id).delete(synchronize_session=False)
-        Workflow.query.filter_by(story_id=story_id).delete(synchronize_session=False)
-
-        db.session.delete(story)
-        db.session.commit()
-    except Exception as db_err:
-        db.session.rollback()
-        logger.exception(f"Database error while deleting story {story_id}: {db_err}")
-        return jsonify({"error": f"Failed to delete story from database: {str(db_err)}"}), 500
-
-    msg = f"Story '{story.title}' deleted successfully from app."
+    msg = f"Story '{story_title}' deleted successfully from app."
     if jira_key:
         if jira_deleted:
             msg += f" Jira issue {jira_key} was also deleted."
