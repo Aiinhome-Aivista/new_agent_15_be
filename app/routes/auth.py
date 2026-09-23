@@ -48,8 +48,7 @@ def me():
     }), 200
 
 @auth_bp.route('/logout', methods=['POST'])
-@require_auth
 def logout():
     # Since we are using stateless JWT, logout is primarily handled on the frontend
-    # by deleting the token. We could implement a token blacklist here if needed.
+    # by deleting the token. We respond immediately without blocking on remote DB.
     return jsonify({"message": "Logged out successfully"}), 200
