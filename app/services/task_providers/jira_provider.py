@@ -10,13 +10,14 @@ logger = logging.getLogger(__name__)
 class JiraTaskProvider(BaseTaskProvider):
     
     def _auth(self):
+        token = (current_app.config.get('JIRA_API_TOKEN') or '').split('#')[0].strip()
         return HTTPBasicAuth(
-            current_app.config['JIRA_EMAIL'],
-            current_app.config['JIRA_API_TOKEN']
+            current_app.config.get('JIRA_EMAIL', ''),
+            token
         )
 
     def _base(self):
-        return current_app.config['JIRA_BASE_URL']
+        return (current_app.config.get('JIRA_BASE_URL') or '').rstrip('/')
 
     def _is_configured(self):
         return bool(

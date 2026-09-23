@@ -14,14 +14,15 @@ class JiraService:
 
     @staticmethod
     def _auth():
+        token = (current_app.config.get('JIRA_API_TOKEN') or '').split('#')[0].strip()
         return HTTPBasicAuth(
-            current_app.config['JIRA_EMAIL'],
-            current_app.config['JIRA_API_TOKEN']
+            current_app.config.get('JIRA_EMAIL', ''),
+            token
         )
 
     @staticmethod
     def _base():
-        return current_app.config['JIRA_BASE_URL']
+        return (current_app.config.get('JIRA_BASE_URL') or '').rstrip('/')
 
     @staticmethod
     def _is_configured():
