@@ -212,9 +212,20 @@ class SyncService:
 
                     # Status sync: only update if no active pipeline workflow is currently executing
                     from app.models.workflow import Workflow
+                    from app.models.devaa_models import PullRequest
                     active_wf = Workflow.query.filter_by(story_id=existing.id, status='running').first()
+                    awaiting_qa_wf = Workflow.query.filter_by(story_id=existing.id, status='Awaiting QA').first()
+                    open_pr = PullRequest.query.filter_by(story_id=existing.id, pr_status='open').first()
+
                     if not active_wf:
-                        if existing.status != mapped_status:
+                        is_awaiting_qa = (existing.status == 'QA-TESTING') or bool(awaiting_qa_wf) or bool(open_pr)
+                        # When Jira workflow only has To Do / In Progress / Done, Jira stays 'In Progress' during QA review.
+                        # Do not downgrade QA-TESTING or stories with open PRs to IN-PROGRESS.
+                        if is_awaiting_qa and mapped_status == 'IN-PROGRESS':
+                            if existing.status != 'QA-TESTING':
+                                existing.status = 'QA-TESTING'
+                                updated = True
+                        elif existing.status != mapped_status:
                             existing.status = mapped_status
                             updated = True
                     elif existing.status == 'INVALID':

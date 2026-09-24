@@ -19,6 +19,19 @@ def qa_queue():
     QA queue — stories in QA-TESTING status with open PRs.
     QA Reviewer / Admin only.
     """
+    # Auto-heal: Ensure stories with open PRs and Awaiting QA / Completed workflows are in QA-TESTING
+    open_prs = PullRequest.query.filter_by(pr_status='open').all()
+    for opr in open_prs:
+        s = Story.query.get(opr.story_id) if opr.story_id else None
+        if s and s.status != 'QA-TESTING' and s.status != 'DONE':
+            wf = Workflow.query.filter_by(story_id=s.id).order_by(Workflow.created_at.desc()).first()
+            if wf and wf.status in ('Awaiting QA', 'Completed'):
+                s.status = 'QA-TESTING'
+                try:
+                    db.session.commit()
+                except Exception:
+                    db.session.rollback()
+
     stories_in_qa = Story.query.filter_by(status='QA-TESTING').order_by(Story.updated_at.desc()).all()
 
     result = []
@@ -132,7 +145,15 @@ def submit_qa_decision(story_id):
     """
     story = Story.query.get_or_404(story_id)
     if story.status != 'QA-TESTING':
-        return jsonify({"error": f"Story is not in QA-TESTING state (current: {story.status})"}), 409
+        pr_check = PullRequest.query.filter_by(story_id=story_id, pr_status='open').first()
+        if pr_check:
+            story.status = 'QA-TESTING'
+            try:
+                db.session.commit()
+            except Exception:
+                db.session.rollback()
+        else:
+            return jsonify({"error": f"Story is not in QA-TESTING state (current: {story.status})"}), 409
 
     data = request.get_json() or {}
     decision = data.get('decision', '').lower()
