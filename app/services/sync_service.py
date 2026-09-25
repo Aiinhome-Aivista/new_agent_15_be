@@ -277,30 +277,93 @@ class SyncService:
                         from app.services.jira_service import JiraService
                         from app.models.devaa_models import QAReview
                         from app.agents.orchestrator import Orchestrator
-                        comments = JiraService.get_issue_comments(existing.jira_story_key or existing.external_task_id)
+                        try:
+                            comments = JiraService.get_issue_comments(existing.jira_story_key or existing.external_task_id)
+                        except Exception as ce:
+                            logger.warning(f"Could not fetch comments for {existing.external_task_id}: {ce}")
+                            comments = []
                         for c in comments:
                             c_id = c.get('id')
-                            c_body = c.get('body', '').strip()
-                            if c_body.startswith('[DEVAA]') or c_body.startswith('@DEVAA'):
+                            raw_body = c.get('body', '')
+
+                            # Jira v2 returns body as string, v3 returns ADF (dict).
+                            # Normalise to plain text.
+                            if isinstance(raw_body, dict):
+                                # ADF → extract text from content nodes
+                                def _adf_text(node):
+                                    if isinstance(node, str):
+                                        return node
+                                    if isinstance(node, dict):
+                                        txt = node.get('text', '')
+                                        children = node.get('content', [])
+                                        return txt + ''.join(_adf_text(ch) for ch in children)
+                                    if isinstance(node, list):
+                                        return ''.join(_adf_text(n) for n in node)
+                                    return ''
+                                c_body = _adf_text(raw_body).strip()
+                            else:
+                                c_body = str(raw_body).strip()
+
+                            # Skip DEVAA's own auto-comments (bot replies)
+                            if c_body.startswith('🚀') or c_body.startswith('🤖') or c_body.startswith('✅'):
+                                continue
+                            if '*DEVAA:' in c_body or 'DEVAA Agent received' in c_body:
+                                continue
+
+                            # Match user-written DEVAA tags:
+                            #  - [DEVAA] ...          (square bracket tag)
+                            #  - @DEVAA ...           (plain mention)
+                            #  - {{@DEVAA}} ...       (Jira monospace mention)
+                            #  - [~DEVAA] ...         (Jira wiki mention)
+                            import re as _re
+                            is_devaa = bool(_re.search(r'(?:\[DEVAA\]|\{\{@DEVAA\}\}|@DEVAA|\[~DEVAA\])', c_body, _re.IGNORECASE))
+
+                            if is_devaa:
                                 tag = f"[JIRA-{c_id}]"
                                 existing_qa = QAReview.query.filter(QAReview.story_id == existing.id, QAReview.comments.like(f"{tag}%")).first()
                                 if not existing_qa:
-                                    logger.info(f"Triggering rework for {existing.external_task_id} from Jira comment {c_id}")
+                                    # Clean the body: remove the DEVAA tag prefix for cleaner feedback
+                                    clean_body = _re.sub(r'^\s*(?:\{\{@DEVAA\}\}|\[DEVAA\]|@DEVAA|DEVAA)\s*', '', c_body, flags=_re.IGNORECASE).strip()
+                                    if not clean_body:
+                                        clean_body = c_body
+
+                                    # Look up workflow_id and pr_id for this story (required by QAReview model)
+                                    from app.models.workflow import Workflow
+                                    from app.models.devaa_models import PullRequest as PRModel
+                                    latest_wf = Workflow.query.filter_by(story_id=existing.id).order_by(Workflow.id.desc()).first()
+                                    latest_pr = PRModel.query.filter_by(story_id=existing.id).order_by(PRModel.id.desc()).first()
+
+                                    if not latest_wf:
+                                        logger.warning(f"No workflow found for story {existing.id}, cannot create QAReview from Jira comment")
+                                        continue
+
+                                    logger.info(f"🔄 Triggering rework for {existing.external_task_id} from Jira comment {c_id}: {clean_body[:80]}")
                                     new_qa = QAReview(
                                         story_id=existing.id,
+                                        workflow_id=latest_wf.id,
+                                        pr_id=latest_pr.id if latest_pr else None,
                                         reviewer_id=user.id,
                                         decision='rejected',
-                                        comments=f"{tag} {c_body}",
+                                        comments=f"{tag} {clean_body}",
                                         is_rework=True
                                     )
                                     db.session.add(new_qa)
                                     db.session.commit()
+
+                                    # Post acknowledgment back to Jira
+                                    try:
+                                        JiraService.add_comment(
+                                            existing.jira_story_key or existing.external_task_id,
+                                            f"🤖 DEVAA Agent received your feedback and has started rework:\n\n\"{clean_body[:200]}\"\n\nRework pipeline initiated. You'll be notified when it's complete."
+                                        )
+                                    except Exception:
+                                        pass
+
                                     # If workflow is not active, resume it from ReworkHandler
                                     if awaiting_qa_wf:
                                         awaiting_qa_wf.status = 'running'
                                         db.session.commit()
                                         try:
-                                            # Avoid circular import at top
                                             import threading
                                             threading.Thread(target=Orchestrator.run_workflow, args=(awaiting_qa_wf.id, current_app._get_current_object()), daemon=True).start()
                                         except Exception as e:
