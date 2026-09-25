@@ -67,6 +67,43 @@ class Orchestrator:
         except Exception as e:
             logger.warning(f"Metric recording failed: {e}")
 
+    def _handle_pipeline_failure(self, workflow, story, context_story, config,
+                                  workflow_id, story_id, failed_stage, error_msg):
+        """
+        Central failure handler: posts a Jira 'pipeline_failed' comment,
+        reverts story status back to TO-DO so the user can re-trigger,
+        and logs the failure event.
+        """
+        # Revert story status to TO-DO so it can be re-triggered
+        if story and hasattr(story, 'status'):
+            story.status = 'TO-DO'
+            try:
+                db.session.commit()
+            except Exception:
+                db.session.rollback()
+
+        # Post failure comment to Jira
+        try:
+            step_fail = self._make_step(workflow_id, 'Comment', f'Post pipeline failure comment ({failed_stage}).')
+            CommentAgent(db=db, config=config).run({
+                'story': context_story,
+                'comment_type': 'pipeline_failed',
+                'new_status': 'TO-DO',
+                'workflow_id': workflow_id,
+                'extra': {
+                    'failed_stage': failed_stage,
+                    'error_detail': str(error_msg)[:500] if error_msg else 'Unknown error',
+                    'workflow_id': str(workflow_id),
+                }
+            }, workflow_id=workflow_id, step_record=step_fail)
+        except Exception as comment_err:
+            logger.warning(f"[Orchestrator] Failed to post pipeline_failed Jira comment: {comment_err}")
+
+        log_event(story_id=story_id or 0, workflow_id=workflow_id,
+                  agent='Orchestrator', level='error',
+                  message=f'💥 Pipeline FAILED at `{failed_stage}` — story reverted to TO-DO',
+                  detail=str(error_msg)[:300] if error_msg else '')
+
     def run(self, workflow_id: int, triggered_by_user_id: int = None) -> dict:
         """
         Main orchestration entry point.
@@ -296,6 +333,8 @@ class Orchestrator:
                       agent='RepoAnalysis', level='error',
                       message=f'❌ Repository Analysis FAILED: {repo_result.error}')
             self._update_workflow_status(workflow, 'Failed', 'RepoAnalysis')
+            self._handle_pipeline_failure(workflow, story, context_story, config,
+                                          workflow_id, story_id, 'Repository Analysis', repo_result.error)
             return {"success": False, "stage": "repo_analysis", "error": repo_result.error, "results": results}
 
         files_count = len(repo_result.output.get('files', [])) if isinstance(repo_result.output, dict) else '?'
@@ -342,6 +381,8 @@ class Orchestrator:
                           agent='Developer', level='error',
                           message=f'❌ Developer Agent FAILED (iteration {loop_count}): {dev_result.error}')
                 self._update_workflow_status(workflow, 'Failed', 'Developer')
+                self._handle_pipeline_failure(workflow, story, context_story, config,
+                                              workflow_id, story_id, f'Developer Agent (iteration {loop_count})', dev_result.error)
                 return {"success": False, "stage": "developer", "error": dev_result.error, "results": results}
 
             developer_output = dev_result.output
@@ -424,10 +465,13 @@ class Orchestrator:
                 self._record_metric(workflow_id, story_id, 'acceptance_criteria_coverage', 0.0,
                                      f'Failed after {self.max_loops} iterations')
                 self._update_workflow_status(workflow, 'Failed', 'Validator')
+                val_err = f"Max loop iterations ({self.max_loops}) reached without changes. Human review required."
+                self._handle_pipeline_failure(workflow, story, context_story, config,
+                                              workflow_id, story_id, f'Validator (after {self.max_loops} iterations)', val_err)
                 return {
                     "success": False,
                     "stage": "validator",
-                    "error": f"Max loop iterations ({self.max_loops}) reached without changes. Human review required.",
+                    "error": val_err,
                     "results": results
                 }
 
@@ -457,6 +501,8 @@ class Orchestrator:
                       agent='BranchPR', level='error',
                       message=f'❌ BranchPR Agent FAILED: {pr_result.error}')
             self._update_workflow_status(workflow, 'Failed', 'BranchPR')
+            self._handle_pipeline_failure(workflow, story, context_story, config,
+                                          workflow_id, story_id, 'Branch & PR Creation', pr_result.error)
             return {"success": False, "stage": "branch_pr", "error": pr_result.error, "results": results}
 
         pr_out = pr_result.output

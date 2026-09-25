@@ -149,10 +149,13 @@ class LLMService:
 
         candidate_models = [
             preferred_model,
-            "gemini-2.5-flash",      
-            "gemini-2.0-flash",       
-            "gemini-2.0-flash-lite",  
-            "gemini-1.5-flash",
+            "gemini-3.1-flash-lite",
+            "gemini-3.5-flash-lite",
+            "gemini-flash-lite-latest",
+            "gemini-3.1-flash-lite-preview",
+            "gemini-3.8-flash",
+            "gemini-3.6-flash",
+            "gemini-3.5-flash",
         ]
         # Deduplicate candidates while keeping order
         seen_models = set()
@@ -166,16 +169,17 @@ class LLMService:
         for m_name in models_to_try:
             try:
                 model = genai.GenerativeModel(m_name, **kwargs)
-                response = model.generate_content(prompt)
+                response = model.generate_content(prompt, request_options={'timeout': 60})
                 return response.text
             except Exception as e:
                 last_error = e
-                err_msg = str(e)
-                if "404" in err_msg or "not found" in err_msg.lower():
-                    logger.warning(f"[LLMService] Model '{m_name}' returned 404 for agent '{agent_name}'. Trying next model candidate...")
+                err_msg = str(e).lower()
+                if any(x in err_msg for x in ("404", "not found", "no longer available", "timeout", "deadline", "unavailable", "503", "429", "quota", "resource_exhausted")):
+                    logger.warning(f"[LLMService] Model '{m_name}' failed for agent '{agent_name}' ({e}). Trying next model candidate...")
                     continue
                 else:
-                    break
+                    logger.warning(f"[LLMService] Model '{m_name}' encountered error ({e}). Trying fallback models...")
+                    continue
 
         logger.error(f"[LLMService] Gemini API error (agent={agent_name}): {last_error}")
         raise RuntimeError(f"Gemini API Error: {str(last_error)}")

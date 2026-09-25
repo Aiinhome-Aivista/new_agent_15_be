@@ -447,10 +447,33 @@ def trigger_run(story_id):
     story = Story.query.get_or_404(story_id)
 
     if story.status in ('IN-PROGRESS', 'QA-TESTING'):
-        return jsonify({"error": f"Story is already in '{story.status}' state. Cannot trigger a new run."}), 409
+        # Check if the latest workflow is actually still active or if it's stale/abandoned
+        latest_wf = Workflow.query.filter_by(story_id=story.id).order_by(Workflow.id.desc()).first()
+        is_force = request.args.get('force', 'false').lower() == 'true' or (
+            request.is_json and request.get_json(silent=True) and request.get_json(silent=True).get('force')
+        )
+        
+        is_stale = False
+        if latest_wf and latest_wf.status in ('Failed', 'Completed'):
+            is_stale = True
+        elif latest_wf and latest_wf.updated_at:
+            from app.utils.time_utils import get_ist_now
+            now = get_ist_now()
+            # If workflow hasn't been updated for > 3 minutes, consider it stale/interrupted
+            delta_seconds = (now - latest_wf.updated_at).total_seconds()
+            if delta_seconds > 180:
+                is_stale = True
 
-    # Reset INVALID status to TO-DO on retry
-    if story.status == 'INVALID':
+        if not is_force and not is_stale:
+            return jsonify({"error": f"Story is already in '{story.status}' state. Cannot trigger a new run."}), 409
+
+        # Mark stale workflow as Failed so clean recovery can proceed
+        if latest_wf and latest_wf.status in ('Running', 'Planning', 'Pending'):
+            latest_wf.status = 'Failed'
+            db.session.commit()
+
+    # Reset INVALID or stuck IN-PROGRESS status on retry
+    if story.status in ('INVALID', 'IN-PROGRESS'):
         story.status = 'TO-DO'
         db.session.commit()
 
@@ -490,7 +513,26 @@ def trigger_run(story_id):
     except Exception as e:
         logger.exception(f"Orchestrator failed for story {story_id}: {e}")
         workflow.status = 'Failed'
+        story.status = 'TO-DO'
         db.session.commit()
+
+        # Post failure notification to Jira
+        try:
+            from app.agents.comment_agent import CommentAgent
+            CommentAgent(db=db, config=current_app.config).run({
+                'story': story,
+                'comment_type': 'pipeline_failed',
+                'new_status': 'TO-DO',
+                'workflow_id': workflow.id,
+                'extra': {
+                    'failed_stage': 'Pipeline Crash (Unhandled)',
+                    'error_detail': str(e)[:500],
+                    'workflow_id': str(workflow.id),
+                }
+            }, workflow_id=workflow.id)
+        except Exception as comment_err:
+            logger.warning(f"Failed to post pipeline crash Jira comment: {comment_err}")
+
         return jsonify({"error": f"Orchestrator error: {str(e)}", "workflow_id": workflow.id}), 500
 
 

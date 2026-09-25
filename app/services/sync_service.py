@@ -132,9 +132,10 @@ class SyncService:
 
                 from app.services.token_secret_service import TokenSecretService
 
-                repo_name_m = re.search(r'(?:^|\n)\s*(?:Name|Repository|Repo)\s*[:\-]\s*([^\s\n\r]+)', raw_desc, re.IGNORECASE)
-                repo_url_m = re.search(r'(?:^|\n)\s*(?:URL|Link|Git)\s*[:\-]\s*(https?://[^\s\n\r]+|git@[^\s\n\r]+)', raw_desc, re.IGNORECASE)
-                branch_m = re.search(r'(?:^|\n)\s*(?:Branch|Base\s*Branch|Source\s*Branch)\s*[:\-]\s*([^\s\n\r]+)', raw_desc, re.IGNORECASE)
+                # Primary / Target Repo
+                repo_name_m = re.search(r'(?:^|\n)\s*(?:Target\s*Repo(?:sitory)?|Target|Repository|Repo|Name)\s*[:\-]\s*([^\s\n\r]+)', raw_desc, re.IGNORECASE)
+                repo_url_m = re.search(r'(?:^|\n)\s*(?:Target\s*URL|Target\s*Git|URL|Link|Git)\s*[:\-]\s*(https?://[^\s\n\r]+|git@[^\s\n\r]+)', raw_desc, re.IGNORECASE)
+                branch_m = re.search(r'(?:^|\n)\s*(?:Target\s*Branch|Base\s*Branch|Source\s*Branch|Branch)\s*[:\-]\s*([^\s\n\r]+)', raw_desc, re.IGNORECASE)
 
                 if repo_name_m:
                     parsed_name = repo_name_m.group(1).strip().strip('`').strip('"').strip("'")
@@ -150,6 +151,23 @@ class SyncService:
                     target_repo_url = repo_url_m.group(1).strip().strip('`')
                 if branch_m:
                     target_repo_branch = branch_m.group(1).strip().strip('`')
+
+                # Optional Reference Repo
+                ref_repo_m = re.search(r'(?:^|\n)\s*(?:Reference\s*Repo(?:sitory)?|Ref\s*Repo(?:sitory)?|Reference)\s*[:\-]\s*([^\s\n\r]+)', raw_desc, re.IGNORECASE)
+                ref_branch_m = re.search(r'(?:^|\n)\s*(?:Reference\s*Branch|Ref\s*Branch)\s*[:\-]\s*([^\s\n\r]+)', raw_desc, re.IGNORECASE)
+                ref_repo_info = None
+                if ref_repo_m:
+                    ref_parsed = ref_repo_m.group(1).strip().strip('`').strip('"').strip("'")
+                    ref_cfg = TokenSecretService.get_repo_config(ref_parsed)
+                    ref_url = (ref_cfg.get('url') if ref_cfg else None) or (ref_parsed if ref_parsed.startswith('http') or ref_parsed.startswith('git@') else '')
+                    ref_branch = (ref_branch_m.group(1).strip().strip('`') if ref_branch_m else None) or (ref_cfg.get('branch') if ref_cfg else 'main') or 'main'
+                    if ref_parsed and ref_url:
+                        ref_repo_info = {
+                            "name": ref_parsed,
+                            "url": ref_url,
+                            "branch": ref_branch,
+                            "is_reference": True
+                        }
 
                 # Map external task status to DEVAA status
                 ext_status = (task.status or 'TO-DO').upper().replace(' ', '-')
@@ -204,6 +222,18 @@ class SyncService:
                         if task.due_date and first_det.get('due_date') != task.due_date:
                             first_det['due_date'] = task.due_date
                             det_updated = True
+                        if ref_repo_info:
+                            has_ref = False
+                            for idx, d in enumerate(details):
+                                if idx > 0 and (d.get('is_reference') or d.get('name') == ref_repo_info['name']):
+                                    d.update(ref_repo_info)
+                                    has_ref = True
+                                    det_updated = True
+                                    break
+                            if not has_ref:
+                                details.append(ref_repo_info)
+                                det_updated = True
+
                         if det_updated:
                             existing.repository_details = details
                             from sqlalchemy.orm.attributes import flag_modified
@@ -254,6 +284,10 @@ class SyncService:
                 if task.due_date:
                     repo_info["due_date"] = task.due_date
 
+                story_repos = [repo_info]
+                if ref_repo_info:
+                    story_repos.append(ref_repo_info)
+
                 # Create a new local DEVAA Story based on the external task
                 new_story = Story(
                     external_task_id=task.external_id,
@@ -266,7 +300,7 @@ class SyncService:
                     assignee_id=user.id,
                     owner_id=user.id,
                     status=mapped_status,
-                    repository_details=[repo_info]
+                    repository_details=story_repos
                 )
                 try:
                     db.session.add(new_story)

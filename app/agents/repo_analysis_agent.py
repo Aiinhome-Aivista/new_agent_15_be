@@ -83,6 +83,11 @@ class RepoAnalysisAgent(BaseAgent):
         repo_texts = []
         repo_files_map = {}
         import tempfile, subprocess, os
+        target_repo_dir = None
+        target_commit_sha = None
+        target_base_col = None
+        target_overlay_col = None
+        reference_collections = []
         
         for repo in repo_details:
             repo_url = repo.get('url')
@@ -167,6 +172,14 @@ class RepoAnalysisAgent(BaseAgent):
                     repo_dir=repo_dir
                 )
                 overlay_col = rag_service.get_workflow_overlay(workflow_id=workflow_id, story_id=story_id)
+                if target_repo_dir is None or not repo.get('is_reference'):
+                    target_repo_dir = repo_dir
+                    target_commit_sha = commit_sha
+                    target_base_col = base_col
+                    target_overlay_col = overlay_col
+                else:
+                    # It's a reference repo
+                    reference_collections.append(base_col.name)
 
                 # ── RAG Query #1: Retrieve Architectural Context ────
                 query_text = f"Architecture, key modules, endpoints, and models for: {title}\n{description}\n{acceptance_criteria}"
@@ -186,8 +199,10 @@ class RepoAnalysisAgent(BaseAgent):
                         if file.endswith(('.py', '.js', '.jsx', '.ts', '.tsx', '.json')):
                             file_path = os.path.join(root, file)
                             try:
-                                with open(file_path, 'r', encoding='utf-8') as f:
                                     rel_path = os.path.relpath(file_path, repo_dir).replace('\\', '/')
+                                    if repo.get('is_reference'):
+                                        # Prefix reference files to prevent collisions with primary repo
+                                        rel_path = f"[REF: {repo_name}] {rel_path}"
                                     repo_files_map[rel_path] = f.read()
                             except Exception:
                                 pass
@@ -246,10 +261,11 @@ analysis on files, dependencies, and architectural patterns relevant to resolvin
                     "estimated_complexity": parsed.get('estimated_complexity', 'medium'),
                     "repo_files": repo_files_map,
                     "workspace_dir": workspace_dir,
-                    "repo_dir": repo_dir,
-                    "commit_sha": commit_sha if 'commit_sha' in locals() else '',
-                    "base_collection": base_col.name if 'base_col' in locals() and base_col else '',
-                    "overlay_collection": overlay_col.name if 'overlay_col' in locals() and overlay_col else '',
+                    "repo_dir": target_repo_dir or repo_dir,
+                    "commit_sha": target_commit_sha or (commit_sha if 'commit_sha' in locals() else ''),
+                    "base_collection": target_base_col.name if target_base_col else (base_col.name if 'base_col' in locals() and base_col else ''),
+                    "overlay_collection": target_overlay_col.name if target_overlay_col else (overlay_col.name if 'overlay_col' in locals() and overlay_col else ''),
+                    "reference_collections": reference_collections
                 }
             )
 

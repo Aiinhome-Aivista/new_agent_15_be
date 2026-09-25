@@ -308,8 +308,23 @@ def submit_qa_decision(story_id):
     # Post Jira comment
     try:
         from app.agents.comment_agent import CommentAgent
+        from flask import current_app as _app
         comment_type = 'done' if decision == 'approved' else 'rework_triggered'
-        CommentAgent(db=db, config={}).run({
+        step_c = None
+        try:
+            from app.models.workflow import WorkflowStep
+            step_c = WorkflowStep(
+                workflow_id=pr.workflow_id,
+                step_type='Comment',
+                agent_prompt=f'Post QA {decision} comment to Jira.',
+                status='In Progress',
+                loop_iteration=1
+            )
+            db.session.add(step_c)
+            db.session.commit()
+        except Exception:
+            pass
+        CommentAgent(db=db, config=_app.config).run({
             'story': story,
             'comment_type': comment_type,
             'new_status': new_status,

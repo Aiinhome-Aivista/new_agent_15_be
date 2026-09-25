@@ -46,7 +46,11 @@ class ReferenceSourceService:
         git_sources = cls._fetch_git_links(combined_text)
         sources.extend(git_sources)
 
-        # 3. Index all extracted references into ChromaDB
+        # 3. Detect and fetch Reference Repository files if provided
+        ref_sources = cls._fetch_reference_repo_sources(story, combined_text, workflow_id)
+        sources.extend(ref_sources)
+
+        # 4. Index all extracted references into ChromaDB
         collection_name = f"story_refs_{story_id}"
         indexed_count = cls._index_to_chromadb(collection_name, sources)
 
@@ -258,6 +262,97 @@ class ReferenceSourceService:
                     logger.warning(f"[ReferenceSourceService] Git link fetch returned {resp.status_code}: {raw_url}")
             except Exception as e:
                 logger.warning(f"[ReferenceSourceService] Failed to fetch git link {raw_url}: {e}")
+
+        return sources
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # Reference Repository Ingestion
+    # ─────────────────────────────────────────────────────────────────────────
+
+    @classmethod
+    def _fetch_reference_repo_sources(cls, story, text: str, workflow_id: int = 0) -> list:
+        sources = []
+        try:
+            from app.services.token_secret_service import TokenSecretService
+            from flask import current_app
+            import subprocess
+
+            ref_name = None
+            ref_url = None
+            ref_branch = 'main'
+
+            # 1. Check story.repository_details
+            details = getattr(story, 'repository_details', None) if story else None
+            if isinstance(details, list):
+                for d in details:
+                    if isinstance(d, dict) and d.get('is_reference'):
+                        ref_name = d.get('name')
+                        ref_url = d.get('url')
+                        ref_branch = d.get('branch', 'main')
+                        break
+
+            # 2. Check text for Reference Repo patterns
+            if not ref_url and text:
+                m = re.search(r'(?:Reference\s*Repo(?:sitory)?|Ref\s*Repo(?:sitory)?)\s*[:\-]\s*([^\s\n\r]+)', text, re.IGNORECASE)
+                if m:
+                    val = m.group(1).strip().strip('`').strip('"').strip("'")
+                    cfg = TokenSecretService.get_repo_config(val)
+                    if cfg:
+                        ref_name = val
+                        ref_url = cfg.get('url')
+                        ref_branch = cfg.get('branch', 'main')
+                    elif val.startswith('http') or val.startswith('git@'):
+                        ref_url = val
+                        ref_name = val.split('/')[-1].replace('.git', '')
+
+            if not ref_url:
+                return sources
+
+            token = TokenSecretService.get_token_for_repo(ref_url) or current_app.config.get('GITHUB_TOKEN')
+            clone_url = ref_url
+            if token and "github.com" in ref_url:
+                clone_url = ref_url.replace("https://github.com/", f"https://x-access-token:{token}@github.com/")
+
+            from app.config.settings import Config
+            workspaces_root = getattr(Config, 'WORKSPACES_DIR', current_app.config.get('WORKSPACES_DIR', os.path.abspath(os.path.join(current_app.root_path, '..', 'workspaces'))))
+            os.makedirs(workspaces_root, exist_ok=True)
+            ref_dir = os.path.join(workspaces_root, f"ref_repo_{workflow_id}_{ref_name or 'ref'}")
+
+            git_env = dict(os.environ)
+            git_env['GIT_TERMINAL_PROMPT'] = '0'
+
+            if not os.path.exists(ref_dir):
+                cmd = ['git', 'clone', '--depth', '20', '-b', ref_branch, clone_url, ref_dir]
+                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60, env=git_env)
+                if proc.returncode != 0:
+                    logger.warning(f"[ReferenceSourceService] Failed to clone ref branch '{ref_branch}': {proc.stderr}. Retrying default branch clone...")
+                    cmd_fb = ['git', 'clone', '--depth', '20', clone_url, ref_dir]
+                    proc_fb = subprocess.run(cmd_fb, capture_output=True, text=True, timeout=60, env=git_env)
+                    if proc_fb.returncode != 0:
+                        logger.error(f"[ReferenceSourceService] Fallback clone also failed: {proc_fb.stderr}")
+
+            if os.path.exists(ref_dir):
+                for root, _, files in os.walk(ref_dir):
+                    if any(ig in root for ig in ('.git', 'node_modules', 'venv', '__pycache__', 'dist', 'build', '.idea', '.vscode')):
+                        continue
+                    for f in files:
+                        if f.endswith(('.py', '.js', '.ts', '.jsx', '.tsx', '.json', '.md', '.sql', '.html')):
+                            fp = os.path.join(root, f)
+                            rel = os.path.relpath(fp, ref_dir).replace('\\', '/')
+                            try:
+                                with open(fp, 'r', encoding='utf-8', errors='replace') as r_file:
+                                    cnt = r_file.read()
+                                if cnt.strip() and len(cnt) < 15000:
+                                    sources.append({
+                                        "type": "reference_repo",
+                                        "filename": f"ref:{ref_name}/{rel}",
+                                        "text": cnt
+                                    })
+                            except Exception:
+                                pass
+                logger.info(f"[ReferenceSourceService] Indexed {len(sources)} files from reference repository '{ref_name}'")
+        except Exception as e:
+            logger.warning(f"[ReferenceSourceService] Reference repo fetch failed (non-fatal): {e}")
 
         return sources
 

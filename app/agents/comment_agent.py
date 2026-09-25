@@ -43,9 +43,18 @@ COMMENT_TEMPLATES = {
         "🚀 *DEVAA: Task Done — PR Raised*\n\n"
         "**PR:** {pr_url}\n"
         "**Branch:** `{branch_name}`\n\n"
-        "📎 Evidence report `{evidence_filename}` attached to this issue.\n\n"
+        "📄 Evidence report `{evidence_filename}` is available on the DEVAA PO Dashboard for download and review.\n\n"
         "**Summary:** {pr_summary}\n\n"
         "Story moved to QA-TESTING. Human review required."
+    ),
+    "pipeline_failed": (
+        "⚠️ *DEVAA: Pipeline Failed*\n\n"
+        "The automated development pipeline encountered an error and could not complete.\n\n"
+        "• **Failed At:** `{failed_stage}`\n"
+        "• **Error:** {error_detail}\n"
+        "• **Workflow ID:** {workflow_id}\n\n"
+        "Story has been moved back to TO-DO. You can re-trigger the pipeline from the DEVAA dashboard after addressing any issues.\n\n"
+        "Check the DEVAA Pipeline Logs for detailed diagnostics."
     ),
     "done": (
         "🎉 *DEVAA: Story Complete*\n\n"

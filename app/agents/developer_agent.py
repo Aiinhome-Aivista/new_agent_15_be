@@ -110,6 +110,20 @@ class DeveloperAgent(BaseAgent):
                 existing_code_section = "EXISTING REPOSITORY CODE CONTEXT (Hybrid RAG: Overlay > Base):\n"
                 for s in snippets:
                     existing_code_section += f"\n--- FILE: {s['file_path']} (Lines {s['start_line']}-{s['end_line']}) [{s['source']}] ---\n{s['code']}\n"
+                    
+            # ── RAG Query #2.5: Reference Repositories ──
+            reference_cols = impl_map.get('reference_collections', [])
+            if reference_cols:
+                existing_code_section += "\n\nREFERENCE REPOSITORY CONTEXT:\n"
+                for ref_col_name in reference_cols:
+                    try:
+                        ref_col = rag_service.client.get_collection(ref_col_name)
+                        ref_snippets = rag_service.query_hybrid_rag(ref_col, None, query_dev, n_results=3)
+                        for s in ref_snippets:
+                            existing_code_section += f"\n--- [REFERENCE REPO] FILE: {s['file_path']} (Lines {s['start_line']}-{s['end_line']}) ---\n{s['code']}\n"
+                    except Exception as e:
+                        self.logger.warning(f"[DeveloperAgent] Failed to query reference collection {ref_col_name}: {e}")
+
         except Exception as e:
             self.logger.warning(f"[DeveloperAgent] RAG Query #2 failed, using raw repo_files fallback: {e}")
 

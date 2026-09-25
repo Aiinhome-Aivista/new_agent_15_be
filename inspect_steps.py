@@ -11,7 +11,7 @@ with app.app_context():
     steps = WorkflowStep.query.filter_by(workflow_id=wf.id if wf else 1).order_by(WorkflowStep.id.asc()).all()
     for s in steps:
         print(f"\n=== Step #{s.id} | {s.step_type} | iter={s.loop_iteration} | status={s.status} ===")
-        out = str(s.agent_output)
+        out = str(s.agent_response)
         if len(out) > 600:
             print(out[:600] + "... [truncated]")
         else:
