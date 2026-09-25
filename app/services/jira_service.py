@@ -104,6 +104,20 @@ class JiraService:
         return None
 
     @classmethod
+    def get_issue_comments(cls, jira_key: str) -> list:
+        """Fetch comments for a Jira issue."""
+        if not cls._is_configured():
+            return []
+        url = f"{cls._base()}/rest/api/2/issue/{jira_key}/comment"
+        try:
+            resp = requests.get(url, auth=cls._auth(), headers={"Accept": "application/json"}, timeout=10)
+            if resp.status_code == 200:
+                return resp.json().get('comments', [])
+        except Exception as e:
+            logger.error(f"Failed to fetch comments for {jira_key}: {e}")
+        return []
+
+    @classmethod
     def transition_issue(cls, jira_key: str, target_status: str) -> bool:
         """Transition a Jira issue to a given status name. Returns True on success."""
         if not cls._is_configured():

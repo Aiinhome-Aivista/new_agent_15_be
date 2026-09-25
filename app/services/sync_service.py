@@ -272,6 +272,40 @@ class SyncService:
                             skipped_count += 1
                     else:
                         skipped_count += 1
+                    # ── Check for DEVAA Rework Comments ──
+                    if provider_name == 'jira':
+                        from app.services.jira_service import JiraService
+                        from app.models.devaa_models import QAReview
+                        from app.agents.orchestrator import Orchestrator
+                        comments = JiraService.get_issue_comments(existing.jira_story_key or existing.external_task_id)
+                        for c in comments:
+                            c_id = c.get('id')
+                            c_body = c.get('body', '').strip()
+                            if c_body.startswith('[DEVAA]') or c_body.startswith('@DEVAA'):
+                                tag = f"[JIRA-{c_id}]"
+                                existing_qa = QAReview.query.filter(QAReview.story_id == existing.id, QAReview.comments.like(f"{tag}%")).first()
+                                if not existing_qa:
+                                    logger.info(f"Triggering rework for {existing.external_task_id} from Jira comment {c_id}")
+                                    new_qa = QAReview(
+                                        story_id=existing.id,
+                                        reviewer_id=user.id,
+                                        decision='rejected',
+                                        comments=f"{tag} {c_body}",
+                                        is_rework=True
+                                    )
+                                    db.session.add(new_qa)
+                                    db.session.commit()
+                                    # If workflow is not active, resume it from ReworkHandler
+                                    if awaiting_qa_wf:
+                                        awaiting_qa_wf.status = 'running'
+                                        db.session.commit()
+                                        try:
+                                            # Avoid circular import at top
+                                            import threading
+                                            threading.Thread(target=Orchestrator.run_workflow, args=(awaiting_qa_wf.id, current_app._get_current_object()), daemon=True).start()
+                                        except Exception as e:
+                                            logger.error(f"Failed to trigger async orchestrator for rework: {e}")
+
                     continue
 
                 repo_info = {

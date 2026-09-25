@@ -35,7 +35,7 @@ INSTRUCTIONS:
    - DELETION RULE: Never delete or remove any preexisting functions or routes unless the story Acceptance Criteria explicitly and specifically commands their deprecation/deletion.
 3. For every file being created or modified, provide the `full_content` field containing the COMPLETE, 100% PRODUCTION-READY source code for the entire file (including all preserved existing code).
 4. Strictly fulfill every Acceptance Criterion and add real automated test cases covering valid scenarios, error handling, edge cases, and regression checks.
-5. ALWAYS update (or create) the target repository's README.md with a `## Changelog & Recent Updates` entry detailing the feature, new endpoints/components, and usage examples.
+5. ALWAYS update (or create) the target repository's README.md (or CHANGELOG.md) with a `## Changelog & Recent Updates` entry detailing the changes made in this story. You MUST do this even if README.md is not listed in the Implementation Map. Include the Story ID and title.
 
 Respond in this exact JSON format:
 {{

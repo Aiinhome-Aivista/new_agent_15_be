@@ -30,10 +30,13 @@ DEVELOPER IMPLEMENTATION SUMMARY:
 FILES CHANGED & TECHNICAL DETAILS:
 {detailed_changes}
 
+REWORK & QA FEEDBACK (If any):
+{qa_feedback_section}
+
 Respond in strictly valid JSON format:
 {{
   "pr_title": "feat({key_identifier}): Concise descriptive title (under 72 chars)",
-  "pr_description": "## 📌 Summary & Requirements\\n...\\n\\n## 🛠️ Changes Implemented (What & Where)\\n...\\n\\n## ✅ Acceptance Criteria Coverage\\n...\\n\\n## 🔒 Code Preservation & Quality Assurance\\n..."
+  "pr_description": "## 📌 Summary & Requirements\\n...\\n\\n## 🛠️ Changes Implemented (What & Where)\\n...\\n\\n## ✅ Acceptance Criteria Coverage\\n...\\n\\n## 🔄 Rework & Conversation History\\n...\\n\\n## 🔒 Code Preservation & Quality Assurance\\n..."
 }}
 
 STRUCTURING GUIDELINES FOR "pr_description":
@@ -113,7 +116,8 @@ class BranchPRAgent(BaseAgent):
                     description=description or "No description provided.",
                     acceptance_criteria=acceptance_criteria or "No acceptance criteria specified.",
                     dev_summary=developer_output.get('summary', ''),
-                    detailed_changes=detailed_changes
+                    detailed_changes=detailed_changes,
+                    qa_feedback_section=context.get('qa_feedback', 'None/First Iteration')
                 ),
                 system_instruction="Respond ONLY with valid JSON.",
                 agent_name="BranchPR"
@@ -150,6 +154,11 @@ class BranchPRAgent(BaseAgent):
 
 ## ✅ Acceptance Criteria Coverage
 {ac_formatted}
+
+---
+
+## 🔄 Rework & Conversation History
+{context.get('qa_feedback', 'No previous QA feedback for this PR.')}
 
 ---
 
