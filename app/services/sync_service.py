@@ -365,7 +365,18 @@ class SyncService:
                                         db.session.commit()
                                         try:
                                             import threading
-                                            threading.Thread(target=Orchestrator.run_workflow, args=(awaiting_qa_wf.id, current_app._get_current_object()), daemon=True).start()
+                                            def run_async_orchestrator(wf_id, app, ui_trigger_user):
+                                                with app.app_context():
+                                                    from app.agents.orchestrator import Orchestrator
+                                                    orchestrator = Orchestrator()
+                                                    orchestrator.run(workflow_id=wf_id, triggered_by_user_id=ui_trigger_user)
+
+                                            # Pass current_app._get_current_object() safely
+                                            threading.Thread(
+                                                target=run_async_orchestrator,
+                                                args=(awaiting_qa_wf.id, current_app._get_current_object(), user.id),
+                                                daemon=True
+                                            ).start()
                                         except Exception as e:
                                             logger.error(f"Failed to trigger async orchestrator for rework: {e}")
 

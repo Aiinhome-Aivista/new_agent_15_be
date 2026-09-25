@@ -161,7 +161,8 @@ class Orchestrator:
                 qa_feedback = rework_result.output.get('qa_feedback', '')
                 log_event(story_id=story_id or 0, workflow_id=workflow_id,
                           agent='ReworkHandler', level='success',
-                          message=f'✅ QA feedback loaded ({len(qa_feedback)} chars)')
+                          message=f'✅ QA feedback loaded ({len(qa_feedback)} chars)',
+                          detail=qa_feedback)
                 logger.info(
                     f"[Orchestrator] Rework QA feedback loaded: {len(qa_feedback)} chars"
                 )
