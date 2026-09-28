@@ -60,6 +60,9 @@ COMMENT_TEMPLATES = {
         "🎉 *DEVAA: Story Complete*\n\n"
         "The PR has been approved and merged. This story is now DONE.\n\n"
         "**Merged PR:** {pr_url}"
+    ),
+    "general": (
+        "{body}"
     )
 }
 

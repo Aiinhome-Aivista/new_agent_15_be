@@ -244,7 +244,10 @@ class SyncService:
                     from app.models.workflow import Workflow
                     from app.models.devaa_models import PullRequest
                     active_wf = Workflow.query.filter_by(story_id=existing.id, status='running').first()
-                    awaiting_qa_wf = Workflow.query.filter_by(story_id=existing.id, status='Awaiting QA').first()
+                    awaiting_qa_wf = Workflow.query.filter(
+                        Workflow.story_id == existing.id,
+                        Workflow.status.in_(['Awaiting QA', 'Completed', 'completed'])
+                    ).order_by(Workflow.id.desc()).first()
                     open_pr = PullRequest.query.filter_by(story_id=existing.id, pr_status='open').first()
 
                     if not active_wf:
@@ -337,7 +340,8 @@ class SyncService:
                                         logger.warning(f"No workflow found for story {existing.id}, cannot create QAReview from Jira comment")
                                         continue
 
-                                    logger.info(f"🔄 Triggering rework for {existing.external_task_id} from Jira comment {c_id}: {clean_body[:80]}")
+                                    # ── REWORK INTENT ──
+                                    logger.info(f"🔄 Triggering pipeline for {existing.external_task_id} from Jira comment {c_id}: {clean_body[:80]}")
                                     new_qa = QAReview(
                                         story_id=existing.id,
                                         workflow_id=latest_wf.id,
@@ -362,6 +366,7 @@ class SyncService:
                                     # If workflow is not active, resume it from ReworkHandler
                                     if awaiting_qa_wf:
                                         awaiting_qa_wf.status = 'running'
+                                        awaiting_qa_wf.workflow_type = 'rework'
                                         db.session.commit()
                                         try:
                                             import threading

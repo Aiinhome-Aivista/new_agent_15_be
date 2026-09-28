@@ -346,6 +346,82 @@ class Orchestrator:
         implementation_map = repo_result.output
 
         # ═══════════════════════════════════════════════════════════
+        # NEW STEP: TRIAGE / INTENT CLASSIFICATION (Smart Rework)
+        # ═══════════════════════════════════════════════════════════
+        if is_rework and qa_feedback:
+            log_event(story_id=story_id or 0, workflow_id=workflow_id,
+                      agent='Triage', level='info',
+                      message='🧠 Triage Agent analyzing codebase against your feedback...')
+            self._update_workflow_status(workflow, 'Running', 'Triage')
+            try:
+                from app.services.llm_service import LLMService
+                import json
+                
+                files_found = implementation_map.get('files', []) if isinstance(implementation_map, dict) else []
+                impl_summary = implementation_map.get('analysis', '') if isinstance(implementation_map, dict) else str(implementation_map)[:2000]
+                
+                triage_prompt = (
+                    f"User provided feedback/comment: \"{qa_feedback}\"\n\n"
+                    f"Here is the current state of the codebase for this story:\n{impl_summary}\n"
+                    f"Files identified: {[f.get('path') for f in files_found if isinstance(f, dict)]}\n\n"
+                    "Analyze the user's comment against the codebase state. Classify the required action into ONE of three categories:\n"
+                    "1. 'NEEDS_CODE_CHANGE': The user wants code to be modified, fixed, or a new feature added. OR if you are unsure, default to this.\n"
+                    "2. 'ALREADY_DONE': The user is asking if something is done, and you can confirm it IS done based on the analysis. Or they are just giving an approval (e.g. 'Looks good'). No code changes are needed.\n"
+                    "3. 'NEEDS_CLARIFICATION': The user's request is too ambiguous to proceed, and you must ask for details. If it's a simple clarification, try to proceed instead of blocking.\n\n"
+                    "Respond ONLY with a JSON object: {\"intent\": \"<CATEGORY>\", \"reply\": \"<Your contextual response to the user in human language (in the language they wrote the comment). Answer their question if possible.>\"}"
+                )
+                
+                triage_resp = LLMService.generate_response(
+                    prompt=triage_prompt,
+                    system_instruction="You are DEVAA Triage Agent. Respond ONLY with valid JSON.",
+                    agent_name="TriageAgent"
+                )
+                triage_resp = triage_resp.strip()
+                if triage_resp.startswith("```"):
+                    triage_resp = triage_resp.split("```")[1]
+                    if triage_resp.lower().startswith("json"):
+                        triage_resp = triage_resp[4:]
+                
+                parsed_triage = json.loads(triage_resp.strip())
+                triage_intent = parsed_triage.get('intent', 'NEEDS_CODE_CHANGE').upper()
+                triage_reply = parsed_triage.get('reply', 'I have analyzed your request.')
+                
+                if triage_intent in ['ALREADY_DONE', 'NEEDS_CLARIFICATION']:
+                    log_event(story_id=story_id or 0, workflow_id=workflow_id,
+                              agent='Triage', level='success',
+                              message=f'✅ No code changes required ({triage_intent}). Replying to user.',
+                              detail=triage_reply)
+                    
+                    step_triage_comment = self._make_step(workflow_id, 'Comment', f'Post Triage reply: {triage_intent}')
+                    CommentAgent(db=db, config=config).run({
+                        'story': context_story,
+                        'comment_type': 'general',
+                        'new_status': getattr(story, 'status', 'TO-DO'),
+                        'workflow_id': workflow_id,
+                        'extra': {
+                            'body': f"🤖 *DEVAA Triage*: {triage_reply}"
+                        }
+                    }, workflow_id=workflow_id, step_record=step_triage_comment)
+                    
+                    log_event(story_id=story_id or 0, workflow_id=workflow_id,
+                              agent='Orchestrator', level='success',
+                              message='🎉 Pipeline COMPLETE — Responded conversationally without PR.')
+                              
+                    self._update_workflow_status(workflow, 'Completed', 'Triage')
+                    return {"success": True, "stage": "triage_exit", "reply": triage_reply, "results": results}
+                
+                else:
+                    log_event(story_id=story_id or 0, workflow_id=workflow_id,
+                              agent='Triage', level='info',
+                              message=f'🛠️ Triage concluded code changes are needed. Proceeding to Developer Agent.',
+                              detail=f'Reasoning (Reply Draft): {triage_reply}')
+            except Exception as e:
+                logger.warning(f"[Orchestrator] Triage agent failed: {e}")
+                log_event(story_id=story_id or 0, workflow_id=workflow_id,
+                          agent='Triage', level='warning',
+                          message=f'⚠️ Triage failed, defaulting to development. Error: {e}')
+
+        # ═══════════════════════════════════════════════════════════
         # STEP 3+4 — DEVELOPER ↔ VALIDATOR SELF-CORRECTION LOOP
         # CHANGE C (part 2): qa_feedback injected into Validator context
         # ═══════════════════════════════════════════════════════════
