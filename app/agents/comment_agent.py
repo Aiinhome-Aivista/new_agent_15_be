@@ -94,12 +94,18 @@ class CommentAgent(BaseAgent):
         jira_comment_id = None
         jira_key = story.jira_story_key if hasattr(story, 'jira_story_key') else story.get('jira_story_key')
         if jira_key:
-            jira_comment_id = JiraService.add_comment(jira_key, comment_body)
+            try:
+                jira_comment_id = JiraService.add_comment(jira_key, comment_body)
+            except Exception as e:
+                self.logger.error(f"Failed to post Jira comment: {e}")
 
         # ── Update Jira status ────────────────────────────────────
         jira_transitioned = False
         if new_status and jira_key:
-            jira_transitioned = JiraService.transition_issue(jira_key, new_status)
+            try:
+                jira_transitioned = JiraService.transition_issue(jira_key, new_status)
+            except Exception as e:
+                self.logger.error(f"Failed to transition Jira issue: {e}")
 
         # ── Update story status in DB ─────────────────────────────
         story_updated = False

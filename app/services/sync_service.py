@@ -364,9 +364,10 @@ class SyncService:
                                         pass
 
                                     # If workflow is not active, resume it from ReworkHandler
-                                    if awaiting_qa_wf:
-                                        awaiting_qa_wf.status = 'running'
-                                        awaiting_qa_wf.workflow_type = 'rework'
+                                    target_wf = awaiting_qa_wf or latest_wf
+                                    if target_wf:
+                                        target_wf.status = 'running'
+                                        target_wf.workflow_type = 'rework'
                                         db.session.commit()
                                         try:
                                             import threading
@@ -379,7 +380,7 @@ class SyncService:
                                             # Pass current_app._get_current_object() safely
                                             threading.Thread(
                                                 target=run_async_orchestrator,
-                                                args=(awaiting_qa_wf.id, current_app._get_current_object(), user.id),
+                                                args=(target_wf.id, current_app._get_current_object(), user.id),
                                                 daemon=True
                                             ).start()
                                         except Exception as e:
