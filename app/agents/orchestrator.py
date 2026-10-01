@@ -338,12 +338,43 @@ class Orchestrator:
                                           workflow_id, story_id, 'Repository Analysis', repo_result.error)
             return {"success": False, "stage": "repo_analysis", "error": repo_result.error, "results": results}
 
+        # ── Clarification Gate: pause pipeline if RepoAnalysis is uncertain ──
+        if repo_result.success and isinstance(repo_result.output, dict) and repo_result.output.get('needs_clarification'):
+            from app.agents.clarification_agent import ClarificationAgent
+            clarif_question = repo_result.output.get('clarification_question', 'DEVAA needs your input to proceed.')
+            clarif_options = repo_result.output.get('clarification_options')
+
+            log_event(story_id=story_id or 0, workflow_id=workflow_id,
+                      agent='Clarification', level='warning',
+                      message='⏸️ Pipeline paused — DEVAA needs PO clarification before proceeding',
+                      detail=clarif_question)
+            self._update_workflow_status(workflow, 'needs_clarification', 'Clarification')
+
+            step_clarif = self._make_step(workflow_id, 'Clarification', 'Post clarification request to Jira and email PO.')
+            ClarificationAgent(db=db, config=config).run({
+                'story': context_story,
+                'workflow_id': workflow_id,
+                'clarification_question': clarif_question,
+                'clarification_options': clarif_options,
+            }, workflow_id=workflow_id, step_record=step_clarif)
+
+            return {
+                "success": True,
+                "stage": "clarification",
+                "needs_clarification": True,
+                "clarification_question": clarif_question,
+                "clarification_options": clarif_options,
+                "results": results
+            }
+
         files_count = len(repo_result.output.get('files', [])) if isinstance(repo_result.output, dict) else '?'
         log_event(story_id=story_id or 0, workflow_id=workflow_id,
                   agent='RepoAnalysis', level='success',
                   message=f'✅ Repository Analysis complete — implementation map built',
                   detail=f'{files_count} relevant files identified')
         implementation_map = repo_result.output
+        # Pass repo_dir_map through to context so DeveloperAgent and BranchPRAgent can use it
+        repo_dir_map = implementation_map.get('repo_dir_map', {})
 
         # ═══════════════════════════════════════════════════════════
         # NEW STEP: TRIAGE / INTENT CLASSIFICATION (Smart Rework)
@@ -449,7 +480,8 @@ class Orchestrator:
                 'loop_iteration': loop_count,
                 'workflow_id': workflow_id,
                 'workspace_dir': workspace_dir,
-                'reference_collection': reference_collection,   # ← NEW: multi-modal reference sources
+                'repo_dir_map': repo_dir_map,           # multi-repo routing map
+                'reference_collection': reference_collection,
             }, workflow_id=workflow_id, step_record=step_dev)
 
 
@@ -569,6 +601,7 @@ class Orchestrator:
             'triggered_by_user_id': triggered_by_user_id,
             'workspace_dir': workspace_dir,
             'repo_dir': implementation_map.get('repo_dir'),
+            'repo_dir_map': repo_dir_map,   # multi-repo routing: name→path
         }, workflow_id=workflow_id, step_record=step5)
 
         results['branch_pr'] = pr_result.output

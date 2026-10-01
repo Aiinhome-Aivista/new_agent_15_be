@@ -9,9 +9,19 @@ class PullRequest(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     workflow_id = db.Column(db.Integer, db.ForeignKey('workflows.id'), nullable=False)
     story_id = db.Column(db.Integer, db.ForeignKey('stories.id'), nullable=True)
+
+    # ── Primary repository PR (repo[0]) ──────────────────────────────
     branch_name = db.Column(db.String(255), nullable=True)
     pr_url = db.Column(db.String(500), nullable=True)
     pr_number = db.Column(db.Integer, nullable=True)
+    repo_name = db.Column(db.String(150), nullable=True)   # e.g. 'devaa_expense_be'
+
+    # ── Secondary repository PR (repo[1], max 2 repos) ───────────────
+    secondary_branch_name = db.Column(db.String(255), nullable=True)
+    secondary_pr_url = db.Column(db.String(500), nullable=True)
+    secondary_pr_number = db.Column(db.Integer, nullable=True)
+    secondary_repo_name = db.Column(db.String(150), nullable=True)  # e.g. 'devaa_expense_fe'
+
     pr_status = db.Column(db.String(50), default='open')  # open | merged | rejected | closed
     pr_summary = db.Column(db.Text, nullable=True)
     changed_files = db.Column(db.JSON, nullable=True)
@@ -25,13 +35,14 @@ class PullRequest(db.Model):
     qa_reviews = db.relationship('QAReview', backref='pull_request', lazy=True)
 
     def to_dict(self):
-        return {
+        result = {
             'id': self.id,
             'workflow_id': self.workflow_id,
             'story_id': self.story_id,
             'branch_name': self.branch_name,
             'pr_url': self.pr_url,
             'pr_number': self.pr_number,
+            'repo_name': self.repo_name,
             'pr_status': self.pr_status,
             'pr_summary': self.pr_summary,
             'changed_files': self.changed_files,
@@ -41,6 +52,13 @@ class PullRequest(db.Model):
             'merged_at': format_ist_iso(self.merged_at),
             'created_at': format_ist_iso(self.created_at),
         }
+        # Include secondary PR data only when present
+        if self.secondary_pr_url:
+            result['secondary_pr_url'] = self.secondary_pr_url
+            result['secondary_pr_number'] = self.secondary_pr_number
+            result['secondary_branch_name'] = self.secondary_branch_name
+            result['secondary_repo_name'] = self.secondary_repo_name
+        return result
 
 
 
@@ -73,8 +91,46 @@ class QAReview(db.Model):
         }
 
 
+class StoryClarification(db.Model):
+    """
+    Stores DEVAA clarification requests when the agent cannot determine
+    where or how to implement a story. The PO can answer from the
+    Dashboard or directly via Jira — both paths resolve the pipeline.
+    """
+    __tablename__ = 'story_clarifications'
+
+    id = db.Column(db.Integer, primary_key=True)
+    story_id = db.Column(db.Integer, db.ForeignKey('stories.id'), nullable=False)
+    workflow_id = db.Column(db.Integer, db.ForeignKey('workflows.id'), nullable=True)
+    question = db.Column(db.Text, nullable=False)
+    options = db.Column(db.JSON, nullable=True)       # List of choice strings; None = freetext
+    answer = db.Column(db.Text, nullable=True)
+    source = db.Column(db.String(50), nullable=True)  # 'dashboard' | 'jira'
+    status = db.Column(db.String(50), default='pending')  # 'pending' | 'resolved'
+    jira_comment_id = db.Column(db.String(100), nullable=True)
+    created_at = db.Column(db.DateTime, default=get_ist_now)
+    resolved_at = db.Column(db.DateTime, nullable=True)
+
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'story_id': self.story_id,
+            'workflow_id': self.workflow_id,
+            'question': self.question,
+            'options': self.options,
+            'answer': self.answer,
+            'source': self.source,
+            'status': self.status,
+            'jira_comment_id': self.jira_comment_id,
+            'created_at': format_ist_iso(self.created_at),
+            'resolved_at': format_ist_iso(self.resolved_at),
+        }
+
+
+
 class GuardrailEvent(db.Model):
     __tablename__ = 'guardrail_events'
+
 
     id = db.Column(db.Integer, primary_key=True)
     workflow_id = db.Column(db.Integer, db.ForeignKey('workflows.id'), nullable=True)

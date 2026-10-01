@@ -56,6 +56,7 @@ class BranchPRAgent(BaseAgent):
     def _execute(self, context: dict) -> AgentResult:
         from app.models.devaa_models import PullRequest
         from flask import current_app
+        import random, json
 
         story = context.get('story')
         workflow_id = context.get('workflow_id')
@@ -64,7 +65,7 @@ class BranchPRAgent(BaseAgent):
         if not story or not workflow_id:
             return AgentResult(success=False, error="story and workflow_id required.")
 
-        # ── Idempotency check: skip if PR already exists for this workflow ──
+        # ── Idempotency check ──────────────────────────────────────────
         existing_pr = PullRequest.query.filter_by(workflow_id=workflow_id).first()
         if existing_pr:
             self.logger.info(f"PR already exists for workflow {workflow_id} — skipping.")
@@ -74,6 +75,7 @@ class BranchPRAgent(BaseAgent):
                     "pr_id": existing_pr.id,
                     "branch_name": existing_pr.branch_name,
                     "pr_url": existing_pr.pr_url,
+                    "secondary_pr_url": existing_pr.secondary_pr_url,
                     "pr_status": existing_pr.pr_status,
                     "skipped": True,
                     "reason": "PR already exists (idempotency guard)"
@@ -172,92 +174,138 @@ class BranchPRAgent(BaseAgent):
                 "pr_description": fallback_desc.strip()
             }
 
-        # ── Real GitHub API & Git Push (Strictly No Simulation) ──
-        pr_url = None
-        pr_number = None
-        # Determine base branch: context > story.source_branch > repository_details > config default
-        story_repo_details = (
-            getattr(story, 'repository_details', None) if story else
-            (story.get('repository_details') if isinstance(story, dict) else None)
-        )
-        first_repo = (
-            story_repo_details[0] if (isinstance(story_repo_details, list) and len(story_repo_details) > 0 and isinstance(story_repo_details[0], dict))
-            else {}
-        )
-        base_branch = (
+
+        # ── Determine repos and group changes by target_repo ────────────────
+        if isinstance(story_repo_details, str):
+            try: story_repo_details = json.loads(story_repo_details)
+            except Exception: story_repo_details = []
+        story_repo_details = story_repo_details or []
+        story_repo_details = story_repo_details[:2]  # Cap at 2
+
+        from app.services.token_secret_service import TokenSecretService
+
+        def _get_repo_name(repo):
+            url = repo.get('url', '')
+            if not url and repo.get('name'):
+                url = TokenSecretService.get_url_for_repo(repo.get('name')) or ''
+            if 'github.com' in url:
+                parts = url.split('github.com/')[-1].replace('.git', '').strip('/').split('/')
+                if len(parts) >= 2:
+                    return parts[1]
+            return repo.get('name', 'primary-repo')
+
+        repo_name_map = {_get_repo_name(r): r for r in story_repo_details}
+        repo_dir_map = developer_output.get('repo_dir_map', {})
+        all_changes = developer_output.get('changes', [])
+
+        changes_by_repo = {}
+        primary_repo_name = list(repo_name_map.keys())[0] if repo_name_map else 'primary-repo'
+        for c in all_changes:
+            t = c.get('target_repo') or primary_repo_name
+            changes_by_repo.setdefault(t, []).append(c)
+        if not changes_by_repo:
+            changes_by_repo[primary_repo_name] = all_changes
+
+        workspace_dir = context.get('workspace_dir') or developer_output.get('workspace_dir')
+
+        base_branch_global = (
             context.get('base_branch')
-            or (getattr(story, 'source_branch', None) if story else (story.get('source_branch') if isinstance(story, dict) else None))
-            or first_repo.get('branch')
-            or first_repo.get('target_branch')
+            or getattr(story, 'source_branch', None)
+            or (story_repo_details[0].get('branch') if story_repo_details else None)
             or current_app.config.get('GITHUB_DEFAULT_BASE_BRANCH', 'main')
         )
-        base_branch = str(base_branch).strip() if base_branch else 'main'
+        base_branch_global = str(base_branch_global).strip() if base_branch_global else 'main'
 
-        # Resolve GitHub PAT: TokenSecretService (repo_tokens.json) > GITHUB_TOKEN (.env)
-        from app.services.token_secret_service import TokenSecretService
-        repo_url_candidate = first_repo.get('url', '')
-        if not repo_url_candidate and first_repo.get('name'):
-            repo_url_candidate = TokenSecretService.get_url_for_repo(first_repo.get('name')) or ''
-        if not repo_url_candidate:
-            repo_url_candidate = current_app.config.get('GITHUB_BASE_URL', '')
+        import os
 
-        github_token = (
-            TokenSecretService.get_token_for_repo(repo_url_candidate or first_repo.get('name', ''))
-            or current_app.config.get('GITHUB_TOKEN', '').strip()
-        )
+        def _make_pr_for_repo(repo_name, repo_detail, repo_changes):
+            rurl = repo_detail.get('url', '')
+            if not rurl and repo_detail.get('name'):
+                rurl = TokenSecretService.get_url_for_repo(repo_detail.get('name')) or ''
+            if not rurl:
+                rurl = current_app.config.get('GITHUB_BASE_URL', '')
+            token = (
+                TokenSecretService.get_token_for_repo(rurl or repo_detail.get('name', ''))
+                or current_app.config.get('GITHUB_TOKEN', '').strip()
+            )
+            if not token:
+                return None, None, f"No GitHub token for repo '{repo_name}'"
+            br = repo_detail.get('branch') or base_branch_global
+            ws = os.path.join(workspace_dir, repo_name) if workspace_dir else repo_dir_map.get(repo_name)
+            return self._create_github_pr(
+                story=story, branch_name=branch_name,
+                pr_title=pr_meta['pr_title'], pr_body=pr_meta['pr_description'],
+                github_token=token, base_branch=br,
+                changes=repo_changes, workspace_dir=ws
+            )
 
-        if not github_token:
-            err_msg = "GitHub PAT is not configured (neither in config/repo_tokens.json nor GITHUB_TOKEN in backend/.env). Real GitHub branch and PR cannot be created without a valid token."
-            self.logger.error(err_msg)
-            return AgentResult(success=False, error=err_msg)
+        # ── Primary repo PR ──────────────────────────────────────────────────
+        primary_repo_detail = repo_name_map.get(primary_repo_name) or (story_repo_details[0] if story_repo_details else {})
+        primary_changes = changes_by_repo.get(primary_repo_name, all_changes)
 
-        workspace_dir = context.get('workspace_dir')
-        if not workspace_dir and isinstance(developer_output, dict):
-            workspace_dir = developer_output.get('repo_dir')
-
-        pr_url, pr_number, pr_err = self._create_github_pr(
-            story=story,
-            branch_name=branch_name,
-            pr_title=pr_meta['pr_title'],
-            pr_body=pr_meta['pr_description'],
-            github_token=github_token,
-            base_branch=base_branch,
-            changes=changes,
-            workspace_dir=workspace_dir
-        )
-
+        pr_url, pr_number, pr_err = _make_pr_for_repo(primary_repo_name, primary_repo_detail, primary_changes)
         if not pr_url:
-            err_msg = f"Failed to push branch '{branch_name}' and create real GitHub Pull Request: {pr_err or 'Unknown GitHub error'}"
+            err_msg = f"Failed to create primary GitHub PR for '{primary_repo_name}': {pr_err}"
             self.logger.error(err_msg)
             return AgentResult(success=False, error=err_msg)
 
-        # ── Build Evidence Report for DB storage ───────────────────────────
+        self.logger.info(f"[BranchPRAgent] Primary PR created: {pr_url} for repo '{primary_repo_name}'")
+
+        # ── Secondary repo PR (if 2nd repo exists) ───────────────────────────
+        secondary_pr_url = None
+        secondary_pr_number = None
+        secondary_repo_name_val = None
+        secondary_branch = None
+
+        repo_names_list = list(repo_name_map.keys())
+        if len(repo_names_list) >= 2:
+            sec_name = repo_names_list[1]
+            sec_detail = repo_name_map[sec_name]
+            sec_changes = changes_by_repo.get(sec_name, [])
+            if sec_changes:
+                sec_url, sec_num, sec_err = _make_pr_for_repo(sec_name, sec_detail, sec_changes)
+                if sec_url:
+                    secondary_pr_url = sec_url
+                    secondary_pr_number = sec_num
+                    secondary_repo_name_val = sec_name
+                    secondary_branch = branch_name
+                    self.logger.info(f"[BranchPRAgent] Secondary PR created: {sec_url} for '{sec_name}'")
+                else:
+                    self.logger.warning(f"[BranchPRAgent] Secondary PR failed (non-fatal): {sec_err}")
+
+        # ── Build Evidence Report ─────────────────────────────────────────────
         story_dict = story.to_dict() if hasattr(story, 'to_dict') else (story if isinstance(story, dict) else {})
         evidence_report = {
             "generated_by": "DEVAA Evidence Report",
             "story": story_dict,
             "pull_request": {
-                "pr_url": pr_url,
-                "pr_number": pr_number,
-                "branch_name": branch_name,
-                "pr_title": pr_meta.get('pr_title', ''),
-                "pr_description": pr_meta.get('pr_description', ''),
-                "pr_status": "open",
+                "pr_url": pr_url, "pr_number": pr_number, "branch_name": branch_name,
+                "pr_title": pr_meta.get('pr_title', ''), "pr_status": "open",
+                "repo_name": primary_repo_name,
             },
-            "changed_files": [c.get('file') for c in changes],
+            "secondary_pull_request": {
+                "pr_url": secondary_pr_url, "pr_number": secondary_pr_number,
+                "branch_name": secondary_branch, "repo_name": secondary_repo_name_val,
+            } if secondary_pr_url else None,
+            "changed_files": [c.get('file') for c in all_changes],
             "workflow_id": workflow_id,
         }
 
-        # ── Persist Real PR to DB ──────────────────────────────────────
+        # ── Persist to DB ─────────────────────────────────────────────────────
         pr = PullRequest(
             workflow_id=workflow_id,
             story_id=story.id if hasattr(story, 'id') else story.get('id'),
             branch_name=branch_name,
             pr_url=pr_url,
             pr_number=pr_number,
+            repo_name=primary_repo_name,
+            secondary_branch_name=secondary_branch,
+            secondary_pr_url=secondary_pr_url,
+            secondary_pr_number=secondary_pr_number,
+            secondary_repo_name=secondary_repo_name_val,
             pr_status='open',
             pr_summary=pr_meta.get('pr_description', ''),
-            changed_files=[c.get('file') for c in changes],
+            changed_files=[c.get('file') for c in all_changes],
             evidence_report=evidence_report,
             created_by=context.get('triggered_by_user_id')
         )
@@ -267,12 +315,13 @@ class BranchPRAgent(BaseAgent):
         return AgentResult(
             success=True,
             output={
-                "pr_id": pr.id,
-                "branch_name": branch_name,
-                "pr_url": pr.pr_url,
-                "pr_number": pr_number,
-                "pr_title": pr_meta['pr_title'],
-                "changed_files": [c.get('file') for c in changes],
+                "pr_id": pr.id, "branch_name": branch_name,
+                "pr_url": pr.pr_url, "pr_number": pr_number,
+                "pr_title": pr_meta['pr_title'], "repo_name": primary_repo_name,
+                "secondary_pr_url": secondary_pr_url,
+                "secondary_pr_number": secondary_pr_number,
+                "secondary_repo_name": secondary_repo_name_val,
+                "changed_files": [c.get('file') for c in all_changes],
                 "skipped": False
             }
         )

@@ -1,6 +1,8 @@
 """
 DeveloperAgent — Step 3
 Uses the implementation map from RepoAnalysisAgent to generate code changes.
+Now supports multi-repo: each change carries a `target_repo` field so
+BranchPRAgent can route commits to the correct repository.
 Can receive QA feedback for rework cycles.
 """
 from app.agents.base_agent import BaseAgent, AgentResult
@@ -14,6 +16,9 @@ STORY:
 Title: {title}
 Description: {description}
 Acceptance Criteria: {acceptance_criteria}
+
+TARGET REPOSITORIES:
+{repo_names_list}
 
 IMPLEMENTATION MAP:
 Context: {context_summary}
@@ -36,12 +41,14 @@ INSTRUCTIONS:
 3. For every file being created or modified, provide the `full_content` field containing the COMPLETE, 100% PRODUCTION-READY source code for the entire file (including all preserved existing code).
 4. Strictly fulfill every Acceptance Criterion and add real automated test cases covering valid scenarios, error handling, edge cases, and regression checks.
 5. ALWAYS update (or create) the target repository's README.md (or CHANGELOG.md) with a `## Changelog & Recent Updates` entry detailing the changes made in this story. You MUST do this even if README.md is not listed in the Implementation Map. Include the Story ID and title.
+6. MULTI-REPO MANDATE: For EVERY change entry, include `"target_repo"` set to the exact repository name from TARGET REPOSITORIES where that file belongs. If only one repo is listed, still include the field.
 
 Respond in this exact JSON format:
 {{
   "summary": "Detailed summary of all changes made",
   "changes": [
     {{
+      "target_repo": "repo-name-here",
       "file": "path/to/file.py",
       "action": "create|modify|delete",
       "description": "Explanation of changes made",
@@ -161,11 +168,18 @@ class DeveloperAgent(BaseAgent):
         except Exception as ref_err:
             self.logger.warning(f"[DeveloperAgent] Reference source query failed (non-fatal): {ref_err}")
 
-        prompt = DEVELOPER_PROMPT_TEMPLATE.format(
+        # Build repo names list for prompt
+        repo_dir_map = impl_map.get('repo_dir_map', {})
+        if repo_dir_map:
+            repo_names_list = "\n".join([f"- {name}" for name in repo_dir_map.keys()])
+        else:
+            repo_names_list = "- primary-repo (single repository)"
 
+        prompt = DEVELOPER_PROMPT_TEMPLATE.format(
             title=title,
             description=description,
             acceptance_criteria=acceptance_criteria,
+            repo_names_list=repo_names_list,
             context_summary=impl_map.get('context_summary', 'No context available'),
             files_to_modify=str(impl_map.get('files_to_modify', [])),
             patterns_found=str(impl_map.get('patterns_found', [])),
@@ -194,47 +208,55 @@ class DeveloperAgent(BaseAgent):
             summary = parsed.get('summary', '')
             changes = parsed.get('changes', [])
 
-            # Write changes directly to isolated disk workspace with Code Preservation Guard
+            # Write changes to the correct repo directory (multi-repo routing)
             import os, re
-            repo_dir = impl_map.get('repo_dir') or context.get('workspace_dir')
-            if repo_dir and os.path.exists(repo_dir):
-                for c in changes:
-                    rf = c.get('file')
-                    action = c.get('action', 'modify').lower()
-                    if not rf:
-                        continue
-                    full_p = os.path.join(repo_dir, rf)
-                    if action == 'delete':
-                        if os.path.exists(full_p):
-                            try:
-                                os.remove(full_p)
-                                self.logger.info(f"[DeveloperAgent] Deleted file per action: {rf}")
-                            except Exception:
-                                pass
-                    elif action in ('create', 'modify'):
-                        cnt = c.get('full_content') or c.get('code_snippet')
-                        if cnt:
-                            # ── Preservation Guard for existing files ──
-                            if action == 'modify' and os.path.exists(full_p) and rf.endswith(('.py', '.js', '.ts')):
-                                try:
-                                    with open(full_p, 'r', encoding='utf-8', errors='replace') as f_old:
-                                        old_text = f_old.read()
-                                    if rf.endswith('.py'):
-                                        old_defs = set(re.findall(r'(?:def|class)\s+([a-zA-Z0-9_]+)\s*[\(:]', old_text))
-                                        new_defs = set(re.findall(r'(?:def|class)\s+([a-zA-Z0-9_]+)\s*[\(:]', cnt))
-                                        missing_defs = old_defs - new_defs
-                                        if missing_defs:
-                                            self.logger.warning(
-                                                f"[DeveloperAgent] Preservation Notice: Function/class definitions {missing_defs} "
-                                                f"not found in updated {rf}. Verifying story scope."
-                                            )
-                                except Exception as guard_err:
-                                    self.logger.warning(f"[DeveloperAgent] Preservation check warning: {guard_err}")
+            repo_dir_map = impl_map.get('repo_dir_map', {})
+            primary_repo_dir = impl_map.get('repo_dir') or context.get('workspace_dir')
 
-                            os.makedirs(os.path.dirname(full_p), exist_ok=True)
-                            with open(full_p, 'w', encoding='utf-8') as f:
-                                f.write(cnt)
-            
+            for c in changes:
+                rf = c.get('file')
+                action = c.get('action', 'modify').lower()
+                if not rf:
+                    continue
+
+                # Route to correct repo dir based on target_repo
+                c_target_repo = c.get('target_repo', '')
+                if c_target_repo and c_target_repo in repo_dir_map:
+                    repo_dir = repo_dir_map[c_target_repo]
+                else:
+                    repo_dir = primary_repo_dir
+
+                if not repo_dir or not os.path.exists(repo_dir):
+                    self.logger.warning(f"[DeveloperAgent] repo_dir not found for change {rf} (target_repo={c_target_repo}), skipping write.")
+                    continue
+
+                full_p = os.path.join(repo_dir, rf)
+                if action == 'delete':
+                    if os.path.exists(full_p):
+                        try:
+                            os.remove(full_p)
+                            self.logger.info(f"[DeveloperAgent] Deleted file per action: {rf}")
+                        except Exception:
+                            pass
+                elif action in ('create', 'modify'):
+                    cnt = c.get('full_content') or c.get('code_snippet')
+                    if cnt:
+                        if action == 'modify' and os.path.exists(full_p) and rf.endswith(('.py', '.js', '.ts')):
+                            try:
+                                with open(full_p, 'r', encoding='utf-8', errors='replace') as f_old:
+                                    old_text = f_old.read()
+                                if rf.endswith('.py'):
+                                    old_defs = set(re.findall(r'(?:def|class)\s+([a-zA-Z0-9_]+)\s*[\(:]', old_text))
+                                    new_defs = set(re.findall(r'(?:def|class)\s+([a-zA-Z0-9_]+)\s*[\(:]', cnt))
+                                    missing_defs = old_defs - new_defs
+                                    if missing_defs:
+                                        self.logger.warning(f"[DeveloperAgent] Preservation Notice: {missing_defs} not found in {rf}.")
+                            except Exception as guard_err:
+                                self.logger.warning(f"[DeveloperAgent] Preservation check warning: {guard_err}")
+
+                        os.makedirs(os.path.dirname(full_p), exist_ok=True)
+                        with open(full_p, 'w', encoding='utf-8') as f:
+                            f.write(cnt)
             # ── README.md Fail-Safe ────────────────────────────────────────────
             # Guarantee that README.md is always updated, even if LLM omitted it
             readme_in_changes = any(
