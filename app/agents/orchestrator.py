@@ -616,6 +616,19 @@ class Orchestrator:
             except Exception as fe:
                 logger.warning(f"[Orchestrator] Failed to write local evidence file: {fe}")
 
+            # Persist to active storage provider (Local, AWS S3, or Azure Blob)
+            try:
+                from app.services.storage_service import save_file
+                storage_uri = save_file(
+                    file_name=evidence_filename,
+                    content=evidence_bytes,
+                    project_id=story_id,
+                    project_name=context_story.get('title') if isinstance(context_story, dict) else None
+                )
+                logger.info(f"[Orchestrator] Evidence persisted to active storage provider ({storage_uri})")
+            except Exception as se:
+                logger.warning(f"[Orchestrator] Failed to persist evidence to storage provider: {se}")
+
             log_event(story_id=story_id or 0, workflow_id=workflow_id,
                       agent='BranchPR', level='success',
                       message=f'✅ PR raised: {pr_out.get("pr_url", "(url pending)")}',

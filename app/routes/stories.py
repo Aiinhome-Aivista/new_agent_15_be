@@ -213,6 +213,18 @@ def create_story():
                 except Exception as save_err:
                     logger.warning(f"Could not write local attachment cache: {save_err}")
 
+                # Persist to active storage provider
+                try:
+                    from app.services.storage_service import save_file
+                    save_file(
+                        file_name=f"{int(time.time())}_{fname}",
+                        content=content,
+                        project_id=jira_key or "general",
+                        project_name=title or "story_attachments"
+                    )
+                except Exception as stor_err:
+                    logger.warning(f"Could not persist attachment to storage provider: {stor_err}")
+
                 jira_synced = False
                 if jira_key:
                     try:

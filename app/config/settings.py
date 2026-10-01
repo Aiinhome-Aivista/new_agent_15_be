@@ -9,21 +9,79 @@ class Config:
     PROJECT_NAME = "DEVAA"
     SECRET_KEY = os.getenv("SECRET_KEY", "default-secret-key-change-me!!")
 
-    # ── Database ────────────────────────────────────────────────
-    DB_USER = os.getenv("DB_USER", "root")
-    DB_PASSWORD = os.getenv("DB_PASSWORD", "")
-    DB_HOST = os.getenv("DB_HOST", "localhost")
-    DB_PORT = os.getenv("DB_PORT", "3306")
-    DB_NAME = os.getenv("DB_NAME", "devaa_db")
+    # ── Database Provider Configuration ─────────────────────────
+    # Options: DEFAULT, AWS, AZURE
+    DB_PROVIDER = os.getenv("DB_PROVIDER", "DEFAULT").strip().upper()
 
-    _safe_password = quote_plus(DB_PASSWORD) if DB_PASSWORD else ""
-    _default_db_url = f"mysql+pymysql://{DB_USER}:{_safe_password}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
-    SQLALCHEMY_DATABASE_URI = os.getenv("DATABASE_URL", _default_db_url)
+    # 1. Local / Default MySQL Settings
+    DB_HOST = os.getenv("DB_HOST") or os.getenv("MYSQL_HOST", "localhost")
+    DB_PORT = os.getenv("DB_PORT") or os.getenv("MYSQL_PORT", "3306")
+    DB_USER = os.getenv("DB_USER") or os.getenv("MYSQL_USER", "root")
+    DB_PASSWORD = os.getenv("DB_PASSWORD") or os.getenv("MYSQL_PASSWORD", "")
+    DB_NAME = os.getenv("DB_NAME") or os.getenv("MYSQL_DATABASE", "devaa_db")
+
+    # 2. AWS RDS Settings
+    AWS_RDS_HOST = os.getenv("AWS_RDS_HOST", "")
+    AWS_RDS_PORT = os.getenv("AWS_RDS_PORT", "3306")
+    AWS_RDS_DATABASE = os.getenv("AWS_RDS_DATABASE", "")
+    AWS_RDS_USER = os.getenv("AWS_RDS_USER", "")
+    AWS_RDS_PASSWORD = os.getenv("AWS_RDS_PASSWORD", "")
+
+    # 3. Azure DB Settings
+    AZURE_DB_HOST = os.getenv("AZURE_DB_HOST", "")
+    AZURE_DB_PORT = os.getenv("AZURE_DB_PORT", "3306")
+    AZURE_DB_DATABASE = os.getenv("AZURE_DB_DATABASE", "acse_db")
+    AZURE_DB_USER = os.getenv("AZURE_DB_USER", "")
+    AZURE_DB_PASSWORD = os.getenv("AZURE_DB_PASSWORD", "")
+
+    # Resolve active SQLALCHEMY_DATABASE_URI dynamically based on DB_PROVIDER
+    if os.getenv("DATABASE_URL"):
+        SQLALCHEMY_DATABASE_URI = os.getenv("DATABASE_URL")
+    elif DB_PROVIDER in ("AWS", "RDS") and AWS_RDS_HOST:
+        _safe_aws_pwd = quote_plus(AWS_RDS_PASSWORD) if AWS_RDS_PASSWORD else ""
+        SQLALCHEMY_DATABASE_URI = (
+            f"mysql+pymysql://{AWS_RDS_USER}:{_safe_aws_pwd}@{AWS_RDS_HOST}:{AWS_RDS_PORT}/{AWS_RDS_DATABASE}"
+        )
+    elif DB_PROVIDER in ("AZURE",) and AZURE_DB_HOST:
+        _safe_az_pwd = quote_plus(AZURE_DB_PASSWORD) if AZURE_DB_PASSWORD else ""
+        SQLALCHEMY_DATABASE_URI = (
+            f"mysql+pymysql://{AZURE_DB_USER}:{_safe_az_pwd}@{AZURE_DB_HOST}:{AZURE_DB_PORT}/{AZURE_DB_DATABASE}"
+        )
+    else:
+        _safe_password = quote_plus(DB_PASSWORD) if DB_PASSWORD else ""
+        SQLALCHEMY_DATABASE_URI = f"mysql+pymysql://{DB_USER}:{_safe_password}@{DB_HOST}:{DB_PORT}/{DB_NAME}"
+
     SQLALCHEMY_TRACK_MODIFICATIONS = False
     SQLALCHEMY_ENGINE_OPTIONS = {
         "pool_recycle": 280,
         "pool_pre_ping": True,
     }
+
+    # ── Storage Configuration ───────────────────────────────────
+    # Options: DEFAULT, AWS, AZURE
+    CLOUD_PROVIDER = os.getenv("CLOUD_PROVIDER", "DEFAULT").strip().upper()
+
+    # 1. AWS S3 Settings
+    AWS_ACCESS_KEY_ID = os.getenv("AWS_ACCESS_KEY_ID", "")
+    AWS_SECRET_ACCESS_KEY = os.getenv("AWS_SECRET_ACCESS_KEY", "")
+    AWS_DEFAULT_REGION = os.getenv("AWS_DEFAULT_REGION", "us-east-1")
+    AWS_S3_BUCKET_NAME = os.getenv("AWS_S3_BUCKET_NAME", "")
+    AWS_S3_BASE_FOLDER = os.getenv("AWS_S3_BASE_FOLDER", "")
+    AWS_S3_AGENT_FOLDER = os.getenv("AWS_S3_AGENT_FOLDER", "")
+
+    # 2. Azure Blob Storage Settings
+    AZURE_STORAGE_CONNECTION_STRING = os.getenv("AZURE_STORAGE_CONNECTION_STRING", "")
+    AZURE_CONTAINER_NAME = os.getenv("AZURE_CONTAINER_NAME", "agent-artifacts")
+
+    # 3. Local Storage Settings
+    UPLOAD_PATH = os.getenv(
+        "UPLOAD_PATH",
+        os.path.join(
+            os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")),
+            "data",
+            "uploads"
+        )
+    )
 
     # ── LLM Provider ──────────────────────────────────────────
     LLM_PROVIDER = os.getenv("LLM_PROVIDER", "gemini")

@@ -4,7 +4,7 @@ from flask_migrate import Migrate
 from flask_cors import CORS
 from app.config.settings import Config
 
-db = SQLAlchemy()
+from app.extensions.db import db
 migrate = Migrate()
 
 def create_app(config_class=Config):
