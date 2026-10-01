@@ -36,13 +36,14 @@ REWORK & QA FEEDBACK (If any):
 Respond in strictly valid JSON format:
 {{
   "pr_title": "feat({key_identifier}): Concise descriptive title (under 72 chars)",
-  "pr_description": "## 📌 Summary & Requirements\\n...\\n\\n## 🛠️ Changes Implemented (What & Where)\\n...\\n\\n## ✅ Acceptance Criteria Coverage\\n...\\n\\n## 🔄 Rework & Conversation History\\n...\\n\\n## 🔒 Code Preservation & Quality Assurance\\n..."
+  "pr_description": "## 📌 Summary & Requirements\\n...\\n\\n## 🛠️ Changes Implemented (What, Where & Why)\\n...\\n\\n## 🚀 API Contracts (If applicable)\\n...\\n\\n## ✅ Acceptance Criteria Coverage\\n...\\n\\n## 🔄 Rework & Conversation History\\n...\\n\\n## 🔒 Code Preservation & Quality Assurance\\n..."
 }}
 
 STRUCTURING GUIDELINES FOR "pr_description":
 - Use standard GitHub Flavored Markdown (headings, bullet points, backtick code spans like `app/routes/users.py`, checkboxes `[x]`).
 - In "## 📌 Summary & Requirements", clearly summarize the purpose of the story and the business requirement.
-- In "## 🛠️ Changes Implemented (What & Where)", list every modified/created file, its path in backticks, and clearly describe what was added or updated inside it (endpoints, validation rules, handlers).
+- In "## 🛠️ Changes Implemented (What, Where & Why)", list every modified/created file, its path in backticks, clearly describe what was added or updated, and explicitly state WHY this change was made. You MUST include brief code snapshots (snippets of function signatures or key logic) as PROOF for any global functions, utilities, or major logic created, explaining 'I did this for this reason'.
+- In "## 🚀 API Contracts (If applicable)", if any API was created or modified, explicitly detail the HTTP Method, Endpoint URL, Payloads (Request Body/Params), and the full REAL Response Structure based strictly on the actual code provided. Provide exact JSON code block snapshots as proof. Do NOT use static, mock, or default boilerplate data. If no APIs were modified, you may omit this section.
 - In "## ✅ Acceptance Criteria Coverage", list each Acceptance Criterion from the story with `[x]` and explicitly explain how and in which file it was fulfilled.
 - In "## 🔒 Code Preservation & Quality Assurance", confirm that existing functionality/endpoints were preserved and automated test validation passed.
 
@@ -147,7 +148,7 @@ class BranchPRAgent(BaseAgent):
 
 ---
 
-## 🛠️ Changes (What & Where)
+## 🛠️ Changes Implemented (What, Where & Why)
 {detailed_changes}
 
 ---

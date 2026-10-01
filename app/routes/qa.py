@@ -59,9 +59,9 @@ def qa_queue():
 @require_role(['QA Reviewer', 'Admin', 'Product Owner', 'Engineering Lead'])
 def qa_approved():
     """
-    List all stories approved by QA with review details, reviewer, PR, and workflow metadata.
+    List all stories approved or rejected by QA with review details, reviewer, PR, and workflow metadata.
     """
-    reviews = QAReview.query.filter_by(decision='approved').order_by(QAReview.created_at.desc()).all()
+    reviews = QAReview.query.filter(QAReview.decision.in_(['approved', 'rejected'])).order_by(QAReview.created_at.desc()).all()
 
     result = []
     seen_story_ids = set()
