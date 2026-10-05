@@ -88,6 +88,7 @@ class BranchPRAgent(BaseAgent):
         title = story.title if hasattr(story, 'title') else (story.get('title', 'feature') if isinstance(story, dict) else 'feature')
         description = story.description if hasattr(story, 'description') else (story.get('description', '') if isinstance(story, dict) else '')
         acceptance_criteria = story.acceptance_criteria if hasattr(story, 'acceptance_criteria') else (story.get('acceptance_criteria', '') if isinstance(story, dict) else '')
+        story_repo_details = story.repository_details if hasattr(story, 'repository_details') else (story.get('repository_details', []) if isinstance(story, dict) else [])
 
         key_identifier = jira_key or (f"STORY-{story_id}" if story_id else "TASK")
 

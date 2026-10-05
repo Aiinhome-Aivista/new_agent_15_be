@@ -120,6 +120,17 @@ class SyncService:
                             if clean_desc:
                                 task_desc = clean_desc
 
+                # Strip repository configuration block from description and AC
+                repo_block_pattern = r'(?:^|\n)\s*(?:(?:🛠️|⚙️|🌐|📚|📦)\s*)?(?:Repository & Reference Configuration|Repository Configuration|Frontend Configuration|Backend Configuration|Reference Configuration|Target Repo(?:sitory)?(?:\s*\d+)?)'
+                repo_match_desc = re.search(repo_block_pattern, task_desc, re.IGNORECASE)
+                if repo_match_desc:
+                    task_desc = task_desc[:repo_match_desc.start()].strip()
+                    
+                if task_ac:
+                    repo_match_ac = re.search(repo_block_pattern, task_ac, re.IGNORECASE)
+                    if repo_match_ac:
+                        task_ac = task_ac[:repo_match_ac.start()].strip()
+
                 # If raw description contains explicit "Title: ...", use it
                 t_match = re.search(r'(?:^|\n)\s*Title\s*:\s*([^\n\r]+)', raw_desc, re.IGNORECASE)
                 if t_match and t_match.group(1).strip():
@@ -131,17 +142,22 @@ class SyncService:
                 story_repos = []
 
                 # Find all Target Repos using finditer
-                target_repo_matches = list(re.finditer(r'(?:^|\n)\s*(?:Target\s*Repo(?:sitory)?|Target|Repository|Repo)\s*[:\-]\s*([^\s\n\r]+)', raw_desc, re.IGNORECASE))
+                target_repo_matches = list(re.finditer(r'(?:^|\n)\s*(?:Target\s*Repo(?:sitory)?(?:\s*\d+)?|Target(?:\s*\d+)?|Repository|Repo(?:\s*\d+)?)\s*[:\-]\s*([^\s\n\r]+)', raw_desc, re.IGNORECASE))
                 target_repo_indices = [m.start() for m in target_repo_matches]
 
                 if not target_repo_matches:
-                    story_repos.append({
+                    repo_info = {
                         "name": "main-repo",
                         "url": default_repo_url,
                         "branch": default_base_branch,
                         "external_assignee": task.assignee_email,
                         "priority": task_prio
-                    })
+                    }
+                    if getattr(task, 'due_date', None):
+                        repo_info["due_date"] = task.due_date
+                    if getattr(task, 'start_date', None):
+                        repo_info["start_date"] = task.start_date
+                    story_repos.append(repo_info)
                 else:
                     for i, m in enumerate(target_repo_matches):
                         parsed_name = m.group(1).strip().strip('`').strip('"').strip("'")
@@ -180,20 +196,25 @@ class SyncService:
                             "external_assignee": task.assignee_email,
                             "priority": task_prio
                         }
-                        if task.due_date:
+                        if getattr(task, 'due_date', None):
                             repo_info["due_date"] = task.due_date
+                        if getattr(task, 'start_date', None):
+                            repo_info["start_date"] = task.start_date
                         story_repos.append(repo_info)
 
                 target_repo_branch = story_repos[0]["branch"] if story_repos else default_base_branch
 
                 # Optional Reference Repo
-                ref_repo_m = re.search(r'(?:^|\n)\s*(?:Reference\s*Repo(?:sitory)?|Ref\s*Repo(?:sitory)?|Reference)\s*[:\-]\s*([^\s\n\r]+)', raw_desc, re.IGNORECASE)
-                ref_branch_m = re.search(r'(?:^|\n)\s*(?:Reference\s*Branch|Ref\s*Branch)\s*[:\-]\s*([^\s\n\r]+)', raw_desc, re.IGNORECASE)
+                ref_repo_m = re.search(r'(?:Reference\s*Repo(?:sitory)?|Ref\s*Repo(?:sitory)?|Reference)\s*[:\-]\s*([^\s\n\r]+)', raw_desc, re.IGNORECASE)
                 ref_repo_info = None
                 if ref_repo_m:
                     ref_parsed = ref_repo_m.group(1).strip().strip('`').strip('"').strip("'")
+                    
+                    # Extract branch right after reference repo
+                    ref_branch_m = re.search(r'Branch\s*[:\-]\s*([^\s\n\r]+)', raw_desc[ref_repo_m.end():], re.IGNORECASE)
+                    
                     ref_cfg = TokenSecretService.get_repo_config(ref_parsed)
-                    ref_url = (ref_cfg.get('url') if ref_cfg else None) or (ref_parsed if ref_parsed.startswith('http') or ref_parsed.startswith('git@') else '')
+                    ref_url = (ref_cfg.get('url') if ref_cfg else None) or (ref_parsed if ref_parsed.startswith('http') or ref_parsed.startswith('git@') else f"https://github.com/Devil-008/{ref_parsed}.git")
                     ref_branch = (ref_branch_m.group(1).strip().strip('`') if ref_branch_m else None) or (ref_cfg.get('branch') if ref_cfg else 'main') or 'main'
                     if ref_parsed and ref_url:
                         ref_repo_info = {

@@ -250,7 +250,7 @@ class Orchestrator:
             CommentAgent(db=db, config=config).run({
                 'story': context_story,
                 'comment_type': 'ready_for_dev',
-                'new_status': in_progress_status,
+                'new_status': 'IN-PROGRESS',
                 'workflow_id': workflow_id,
                 'extra': {
                     'branch_name': target_branch,
