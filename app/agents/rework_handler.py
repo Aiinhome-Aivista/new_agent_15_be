@@ -46,6 +46,9 @@ class ReworkHandler(BaseAgent):
         combined_feedback = "\n".join(aggregated_feedback)
         rework_count = len(qa_rejections)
 
+        # Serialize story to dict to avoid JSON serialization errors in step record persistence
+        story_dict = story.to_dict() if hasattr(story, 'to_dict') else (story if isinstance(story, dict) else {})
+
         return AgentResult(
             success=True,
             output={
@@ -53,7 +56,7 @@ class ReworkHandler(BaseAgent):
                 "rework_count": rework_count,
                 "restart_from": "RepoAnalysis",
                 "restart_context": {
-                    "story": story,
+                    "story_id": story_dict.get("id"),
                     "workflow_id": workflow_id,
                     "qa_feedback": combined_feedback,
                     "loop_iteration": rework_count + 1
