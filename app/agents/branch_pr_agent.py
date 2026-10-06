@@ -198,14 +198,40 @@ class BranchPRAgent(BaseAgent):
         repo_name_map = {_get_repo_name(r): r for r in story_repo_details}
         repo_dir_map = developer_output.get('repo_dir_map', {})
         all_changes = developer_output.get('changes', [])
+        repo_names = list(repo_name_map.keys())
+        primary_repo_name = repo_names[0] if repo_names else 'primary-repo'
+        is_multi_repo = len(repo_names) > 1
+
+        def _match_repo(t):
+            if not t: 
+                return primary_repo_name if not is_multi_repo else None
+            
+            t_low = str(t).lower()
+            for r in repo_names:
+                if t_low == r.lower(): return r
+            for r in repo_names:
+                if t_low in r.lower() or r.lower() in t_low: return r
+            if 'frontend' in t_low or 'fe' in t_low or 'ui' in t_low:
+                for r in repo_names:
+                    if '_fe' in r.lower() or 'frontend' in r.lower(): return r
+            if 'backend' in t_low or 'be' in t_low or 'api' in t_low:
+                for r in repo_names:
+                    if '_be' in r.lower() or 'backend' in r.lower() or 'api' in r.lower(): return r
+            
+            return primary_repo_name if not is_multi_repo else None
 
         changes_by_repo = {}
-        primary_repo_name = list(repo_name_map.keys())[0] if repo_name_map else 'primary-repo'
         for c in all_changes:
-            t = c.get('target_repo') or primary_repo_name
-            changes_by_repo.setdefault(t, []).append(c)
-        if not changes_by_repo:
-            changes_by_repo[primary_repo_name] = all_changes
+            t = _match_repo(c.get('target_repo'))
+            if t:
+                changes_by_repo.setdefault(t, []).append(c)
+            else:
+                self.logger.warning(f"Could not match target_repo '{c.get('target_repo')}' for file '{c.get('file')}'. Dropping to prevent cross-repo contamination.")
+
+        if not changes_by_repo and all_changes:
+            err = "CRITICAL ERROR: No changes could be mapped to a valid repository. All target_repo values were invalid or missing."
+            self.logger.error(err)
+            return AgentResult(success=False, error=err)
 
         workspace_dir = context.get('workspace_dir') or developer_output.get('workspace_dir')
 
@@ -247,9 +273,15 @@ class BranchPRAgent(BaseAgent):
 
         # ── Primary repo PR ──────────────────────────────────────────────────
         primary_repo_detail = repo_name_map.get(primary_repo_name) or (story_repo_details[0] if story_repo_details else {})
-        primary_changes = changes_by_repo.get(primary_repo_name, all_changes)
+        primary_changes = changes_by_repo.get(primary_repo_name, [])
 
-        pr_url, pr_number, pr_err = _make_pr_for_repo(primary_repo_name, primary_repo_detail, primary_changes)
+        # If LLM completely failed to provide target_repo and changes_by_repo is empty, fallback to all_changes is handled at line 207
+        pr_url, pr_number, pr_err = None, None, None
+        if primary_changes:
+            pr_url, pr_number, pr_err = _make_pr_for_repo(primary_repo_name, primary_repo_detail, primary_changes)
+        else:
+            self.logger.info(f"[BranchPRAgent] No changes targeted for primary repo '{primary_repo_name}'. Skipping PR creation.")
+            pr_url = "skipped"
         if not pr_url:
             err_msg = f"Failed to create primary GitHub PR for '{primary_repo_name}': {pr_err}"
             self.logger.error(err_msg)
