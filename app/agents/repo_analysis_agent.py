@@ -43,7 +43,8 @@ CRITICAL ARCHITECTURAL RULES:
    - DO NOT modify or overwrite existing files/APIs unless Acceptance Criteria explicitly demands it.
 2. PRESERVATION MANDATE: Zero unauthorized deletions. All preexisting routes, models, and utility functions must remain intact.
 3. MULTI-REPO MANDATE: For every file in files_to_modify, you MUST set `target_repo` to the exact repository name (from TARGET REPOSITORIES above) where that file resides. If all files are in one repo, still include the `target_repo` field.
-4. CONFIDENCE: Set `confidence` to "low" only if you genuinely cannot determine where a change belongs. In that case, populate `clarification_question` and `clarification_options`.
+4. REPOSITORY AWARENESS: Carefully examine the root files/structure provided for each repository to deduce its technology stack (e.g., package.json implies JS/TS/Frontend/Node, requirements.txt implies Python/Backend). Ensure code is assigned to the repository that matches its language and framework.
+5. CONFIDENCE: Set `confidence` to "low" only if you genuinely cannot determine where a change belongs. In that case, populate `clarification_question` and `clarification_options`.
 
 Respond in this exact JSON format:
 {{
@@ -229,7 +230,7 @@ class RepoAnalysisAgent(BaseAgent):
                 if len(parts) >= 2:
                     repo_name = parts[1]
 
-            repo_name_entries.append(f"- {repo_name} ({repo_url})")
+            # Repo dir setup
             repo_dir = os.path.join(workspace_dir, repo_name)
             repo_dir_map[repo_name] = repo_dir
 
@@ -281,6 +282,24 @@ class RepoAnalysisAgent(BaseAgent):
                     target_overlay_col = overlay_col
                 else:
                     reference_collections.append(base_col.name)
+
+                # ── Determine Repo Context ──
+                root_files = []
+                if os.path.exists(repo_dir):
+                    root_files = [f for f in os.listdir(repo_dir) if os.path.isfile(os.path.join(repo_dir, f)) and not f.startswith('.')]
+                
+                tech_indicators = []
+                if 'package.json' in root_files: tech_indicators.append('Node/JS/TS/Frontend')
+                if 'requirements.txt' in root_files or 'pyproject.toml' in root_files: tech_indicators.append('Python/Backend')
+                if 'pom.xml' in root_files or 'build.gradle' in root_files: tech_indicators.append('Java')
+                
+                context_str = f"- {repo_name} ({repo_url})"
+                if tech_indicators:
+                    context_str += f" [Tech Stack: {' & '.join(tech_indicators)}]"
+                elif root_files:
+                    context_str += f" [Root Files: {', '.join(root_files[:5])}]"
+                    
+                repo_name_entries.append(context_str)
 
                 # ── RAG Query per repo ───────────────────────────────
                 snippets = rag_service.query_hybrid_rag(base_col, overlay_col, query_text, n_results=8)
@@ -397,7 +416,8 @@ Focus your analysis on resolving these QA issues:
                     "commit_sha": target_commit_sha or '',
                     "base_collection": target_base_col.name if target_base_col else '',
                     "overlay_collection": target_overlay_col.name if target_overlay_col else '',
-                    "reference_collections": reference_collections
+                    "reference_collections": reference_collections,
+                    "repo_context_list": repo_name_entries
                 }
             )
 

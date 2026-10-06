@@ -42,6 +42,7 @@ INSTRUCTIONS:
 4. Strictly fulfill every Acceptance Criterion and add real automated test cases covering valid scenarios, error handling, edge cases, and regression checks.
 5. ALWAYS update (or create) the target repository's README.md (or CHANGELOG.md) with a `## Changelog & Recent Updates` entry detailing the changes made in this story. You MUST do this even if README.md is not listed in the Implementation Map. Include the Story ID and title.
 6. MULTI-REPO MANDATE: For EVERY change entry, include `"target_repo"` set to the exact repository name from TARGET REPOSITORIES where that file belongs. If only one repo is listed, still include the field.
+7. REPOSITORY AWARENESS (CRITICAL): Read the Tech Stack / Root Files provided in the TARGET REPOSITORIES list. You MUST strictly route backend logic/files to the Backend repo and frontend logic/files to the Frontend repo. Never mix them.
 
 Respond in this exact JSON format:
 {{
@@ -169,8 +170,11 @@ class DeveloperAgent(BaseAgent):
             self.logger.warning(f"[DeveloperAgent] Reference source query failed (non-fatal): {ref_err}")
 
         # Build repo names list for prompt
+        repo_context_list = impl_map.get('repo_context_list', [])
         repo_dir_map = impl_map.get('repo_dir_map', {})
-        if repo_dir_map:
+        if repo_context_list:
+            repo_names_list = "\n".join(repo_context_list)
+        elif repo_dir_map:
             repo_names_list = "\n".join([f"- {name}" for name in repo_dir_map.keys()])
         else:
             repo_names_list = "- primary-repo (single repository)"
