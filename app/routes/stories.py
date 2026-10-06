@@ -467,15 +467,26 @@ def trigger_run(story_id):
         if not is_force and not is_stale:
             return jsonify({"error": f"Story is already in '{story.status}' state. Cannot trigger a new run."}), 409
 
-        # Mark stale workflow as Failed so clean recovery can proceed
+        # Execute 4-layer rollback on stale/interrupted workflow so clean recovery can proceed
         if latest_wf and latest_wf.status in ('Running', 'Planning', 'Pending'):
-            latest_wf.status = 'Failed'
-            db.session.commit()
+            try:
+                from app.services.cleanup_service import CleanupService
+                logger.info(f"[trigger_run] Executing 4-layer rollback for stale workflow {latest_wf.id} on story {story.id}")
+                CleanupService.rollback_pipeline_run(
+                    workflow_id=latest_wf.id,
+                    story_id=story.id,
+                    failed_stage="Stale Pipeline Recovery",
+                    error_msg="Prior pipeline run was abandoned or timed out (>180s without update). Cleaned up automatically.",
+                    context_story=story
+                )
+            except Exception as stale_clean_err:
+                logger.warning(f"[trigger_run] Cleanup of stale workflow {latest_wf.id} failed: {stale_clean_err}")
+                latest_wf.status = 'Failed'
+                db.session.commit()
 
-    # Reset INVALID or stuck IN-PROGRESS status on retry
-    if story.status in ('INVALID', 'IN-PROGRESS'):
-        story.status = 'TO-DO'
-        db.session.commit()
+    # Reset INVALID or stuck IN-PROGRESS status on retry, then lock story state
+    story.status = 'IN-PROGRESS'
+    db.session.commit()
 
     # Create linked workflow
     workflow = Workflow(
@@ -512,26 +523,20 @@ def trigger_run(story_id):
 
     except Exception as e:
         logger.exception(f"Orchestrator failed for story {story_id}: {e}")
-        workflow.status = 'Failed'
-        story.status = 'TO-DO'
-        db.session.commit()
-
-        # Post failure notification to Jira
         try:
-            from app.agents.comment_agent import CommentAgent
-            CommentAgent(db=db, config=current_app.config).run({
-                'story': story,
-                'comment_type': 'pipeline_failed',
-                'new_status': 'TO-DO',
-                'workflow_id': workflow.id,
-                'extra': {
-                    'failed_stage': 'Pipeline Crash (Unhandled)',
-                    'error_detail': str(e)[:500],
-                    'workflow_id': str(workflow.id),
-                }
-            }, workflow_id=workflow.id)
-        except Exception as comment_err:
-            logger.warning(f"Failed to post pipeline crash Jira comment: {comment_err}")
+            from app.services.cleanup_service import CleanupService
+            CleanupService.rollback_pipeline_run(
+                workflow_id=workflow.id,
+                story_id=story.id,
+                failed_stage="Unhandled Pipeline Crash",
+                error_msg=str(e),
+                context_story=story
+            )
+        except Exception as cleanup_err:
+            logger.warning(f"CleanupService rollback on unhandled crash failed: {cleanup_err}")
+            workflow.status = 'Failed'
+            story.status = 'TO-DO'
+            db.session.commit()
 
         return jsonify({"error": f"Orchestrator error: {str(e)}", "workflow_id": workflow.id}), 500
 

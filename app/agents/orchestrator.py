@@ -68,41 +68,44 @@ class Orchestrator:
             logger.warning(f"Metric recording failed: {e}")
 
     def _handle_pipeline_failure(self, workflow, story, context_story, config,
-                                  workflow_id, story_id, failed_stage, error_msg):
+                                  workflow_id, story_id, failed_stage, error_msg,
+                                  workspace_dir=None, target_branch=None):
         """
-        Central failure handler: posts a Jira 'pipeline_failed' comment,
-        reverts story status back to TO-DO so the user can re-trigger,
-        and logs the failure event.
+        Central failure handler: executes 4-layer zero-dirty-state rollback via CleanupService,
+        sanitizing remote Git/GitHub, ChromaDB overlays, Relational DB, and local workspaces,
+        reverts story status to TO-DO, posts Jira comment, and logs failure.
         """
-        # Revert story status to TO-DO so it can be re-triggered
-        if story and hasattr(story, 'status'):
-            story.status = 'TO-DO'
-            try:
-                db.session.commit()
-            except Exception:
-                db.session.rollback()
-
-        # Post failure comment to Jira
         try:
-            step_fail = self._make_step(workflow_id, 'Comment', f'Post pipeline failure comment ({failed_stage}).')
-            CommentAgent(db=db, config=config).run({
-                'story': context_story,
-                'comment_type': 'pipeline_failed',
-                'new_status': 'TO-DO',
-                'workflow_id': workflow_id,
-                'extra': {
-                    'failed_stage': failed_stage,
-                    'error_detail': str(error_msg)[:500] if error_msg else 'Unknown error',
-                    'workflow_id': str(workflow_id),
-                }
-            }, workflow_id=workflow_id, step_record=step_fail)
-        except Exception as comment_err:
-            logger.warning(f"[Orchestrator] Failed to post pipeline_failed Jira comment: {comment_err}")
+            from app.services.cleanup_service import CleanupService
+            CleanupService.rollback_pipeline_run(
+                workflow_id=workflow_id,
+                story_id=story_id,
+                failed_stage=failed_stage,
+                error_msg=error_msg,
+                workspace_dir=workspace_dir,
+                target_branch=target_branch,
+                context_story=context_story
+            )
+        except Exception as cleanup_err:
+            logger.exception(f"[Orchestrator] Error during automated 4-layer rollback: {cleanup_err}")
+            # Direct database fallback if cleanup service threw unexpected error
+            if story and hasattr(story, 'status'):
+                story.status = 'TO-DO'
+                try:
+                    db.session.commit()
+                except Exception:
+                    db.session.rollback()
+            if workflow:
+                workflow.status = 'Failed'
+                try:
+                    db.session.commit()
+                except Exception:
+                    db.session.rollback()
 
-        log_event(story_id=story_id or 0, workflow_id=workflow_id,
-                  agent='Orchestrator', level='error',
-                  message=f'💥 Pipeline FAILED at `{failed_stage}` — story reverted to TO-DO',
-                  detail=str(error_msg)[:300] if error_msg else '')
+            log_event(story_id=story_id or 0, workflow_id=workflow_id,
+                      agent='Orchestrator', level='error',
+                      message=f'💥 Pipeline FAILED at `{failed_stage}` — story reverted to TO-DO',
+                      detail=str(error_msg)[:300] if error_msg else '')
 
     def run(self, workflow_id: int, triggered_by_user_id: int = None) -> dict:
         """
@@ -335,7 +338,8 @@ class Orchestrator:
                       message=f'❌ Repository Analysis FAILED: {repo_result.error}')
             self._update_workflow_status(workflow, 'Failed', 'RepoAnalysis')
             self._handle_pipeline_failure(workflow, story, context_story, config,
-                                          workflow_id, story_id, 'Repository Analysis', repo_result.error)
+                                          workflow_id, story_id, 'Repository Analysis', repo_result.error,
+                                          workspace_dir=workspace_dir, target_branch=target_branch)
             return {"success": False, "stage": "repo_analysis", "error": repo_result.error, "results": results}
 
         # ── Clarification Gate: pause pipeline if RepoAnalysis is uncertain ──
@@ -503,7 +507,8 @@ class Orchestrator:
                           message=f'❌ Developer Agent FAILED (iteration {loop_count}): {dev_result.error}')
                 self._update_workflow_status(workflow, 'Failed', 'Developer')
                 self._handle_pipeline_failure(workflow, story, context_story, config,
-                                              workflow_id, story_id, f'Developer Agent (iteration {loop_count})', dev_result.error)
+                                              workflow_id, story_id, f'Developer Agent (iteration {loop_count})', dev_result.error,
+                                              workspace_dir=workspace_dir, target_branch=target_branch)
                 return {"success": False, "stage": "developer", "error": dev_result.error, "results": results}
 
             developer_output = dev_result.output
@@ -588,7 +593,8 @@ class Orchestrator:
                 self._update_workflow_status(workflow, 'Failed', 'Validator')
                 val_err = f"Max loop iterations ({self.max_loops}) reached without changes. Human review required."
                 self._handle_pipeline_failure(workflow, story, context_story, config,
-                                              workflow_id, story_id, f'Validator (after {self.max_loops} iterations)', val_err)
+                                              workflow_id, story_id, f'Validator (after {self.max_loops} iterations)', val_err,
+                                              workspace_dir=workspace_dir, target_branch=target_branch)
                 return {
                     "success": False,
                     "stage": "validator",
@@ -624,7 +630,8 @@ class Orchestrator:
                       message=f'❌ BranchPR Agent FAILED: {pr_result.error}')
             self._update_workflow_status(workflow, 'Failed', 'BranchPR')
             self._handle_pipeline_failure(workflow, story, context_story, config,
-                                          workflow_id, story_id, 'Branch & PR Creation', pr_result.error)
+                                          workflow_id, story_id, 'Branch & PR Creation', pr_result.error,
+                                          workspace_dir=workspace_dir, target_branch=target_branch)
             return {"success": False, "stage": "branch_pr", "error": pr_result.error, "results": results}
 
         pr_out = pr_result.output
@@ -734,6 +741,14 @@ class Orchestrator:
                   agent='Orchestrator', level='success',
                   message='🎉 Pipeline COMPLETE — Awaiting QA review',
                   detail=f'PR: {pr_out.get("pr_url")} | Loops: {loop_count}')
+
+        # Clean up temporary workspace directory on successful pipeline completion
+        try:
+            if workspace_dir and os.path.exists(workspace_dir):
+                from app.services.cleanup_service import CleanupService
+                CleanupService.cleanup_workspace_dir(workspace_dir)
+        except Exception as ws_err:
+            logger.warning(f"[Orchestrator] Failed to cleanup workspace after success: {ws_err}")
 
         logger.info(f"[Orchestrator] Workflow {workflow_id} complete. PR: {pr_out.get('pr_url')}. Awaiting QA.")
         return {

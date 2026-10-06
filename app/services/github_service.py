@@ -320,6 +320,82 @@ class GitHubService:
             logger.error(f"Exception fetching PR details #{pr_number}: {e}")
         return {}
 
+    def close_pr(self, repo_url: str, pr_number: int, comment: str = None) -> bool:
+        """
+        Close a Pull Request on GitHub.
+        PATCH /repos/{owner}/{repo}/pulls/{pull_number} with {"state": "closed"}
+        Optionally posts an issue comment explaining why it was closed.
+        """
+        org, repo_name = self._parse_repo(repo_url)
+        if not org or not repo_name:
+            logger.warning(f"[GitHubService] Cannot close PR: invalid repo URL '{repo_url}'")
+            return False
+
+        api_base = f"https://api.github.com/repos/{org}/{repo_name}"
+
+        # Post comment first if provided
+        if comment:
+            try:
+                requests.post(
+                    f"{api_base}/issues/{pr_number}/comments",
+                    headers=self._headers,
+                    json={"body": comment},
+                    timeout=15
+                )
+            except Exception as e:
+                logger.warning(f"[GitHubService] Failed to post closing comment on PR #{pr_number}: {e}")
+
+        # Close PR
+        try:
+            resp = requests.patch(
+                f"{api_base}/pulls/{pr_number}",
+                headers=self._headers,
+                json={"state": "closed"},
+                timeout=15
+            )
+            if resp.status_code in (200, 204):
+                logger.info(f"[GitHubService] Successfully closed PR #{pr_number} on {org}/{repo_name}")
+                return True
+            else:
+                logger.warning(f"[GitHubService] Failed to close PR #{pr_number}: {resp.status_code} {resp.text[:200]}")
+                return False
+        except Exception as e:
+            logger.error(f"[GitHubService] Exception closing PR #{pr_number}: {e}")
+            return False
+
+    def delete_branch(self, repo_url: str, branch_name: str) -> bool:
+        """
+        Delete a remote branch on GitHub.
+        DELETE /repos/{owner}/{repo}/git/refs/heads/{ref}
+        Returns True if deleted or branch did not exist (404).
+        """
+        org, repo_name = self._parse_repo(repo_url)
+        if not org or not repo_name:
+            logger.warning(f"[GitHubService] Cannot delete branch: invalid repo URL '{repo_url}'")
+            return False
+
+        # Clean branch name
+        clean_ref = branch_name.replace("refs/heads/", "").strip()
+        if not clean_ref or clean_ref in ("main", "master", "develop", "release"):
+            logger.warning(f"[GitHubService] Refusing to delete protected or root branch: '{clean_ref}'")
+            return False
+
+        url = f"https://api.github.com/repos/{org}/{repo_name}/git/refs/heads/{clean_ref}"
+        try:
+            resp = requests.delete(url, headers=self._headers, timeout=15)
+            if resp.status_code in (204, 200):
+                logger.info(f"[GitHubService] Deleted remote branch '{clean_ref}' on {org}/{repo_name}")
+                return True
+            elif resp.status_code == 404:
+                logger.debug(f"[GitHubService] Branch '{clean_ref}' not found on {org}/{repo_name} (already deleted)")
+                return True
+            else:
+                logger.warning(f"[GitHubService] Failed to delete branch '{clean_ref}': {resp.status_code} {resp.text[:200]}")
+                return False
+        except Exception as e:
+            logger.error(f"[GitHubService] Exception deleting branch '{clean_ref}': {e}")
+            return False
+
     def sync_feature_branch_with_base(self, repo_url: str, branch_name: str, base_branch: str, workspace_dir: str = None) -> dict:
         """
         Auto-rebase / sync helper (Option 1):

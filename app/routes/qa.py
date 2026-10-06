@@ -289,6 +289,34 @@ def submit_qa_decision(story_id):
         story.status = 'TO-DO'
         new_status = 'TO-DO'
 
+        # Close rejected PR on GitHub so no unmerged/stale PR hangs open
+        try:
+            from app.services.github_service import GitHubService
+            from flask import current_app as _app
+            repo_url = _app.config.get('GITHUB_REPO_URL')
+            if pr.pr_url and '/pull/' in pr.pr_url:
+                repo_url = pr.pr_url.split('/pull/')[0]
+            if repo_url and pr.pr_number:
+                gh_service = GitHubService.from_app_config(repo_url)
+                close_comment = (
+                    f"⛔ **QA Review: Changes Rejected by DEVAA Reviewer**\n\n"
+                    f"**Reviewer:** {getattr(request.current_user, 'username', 'QA')}\n"
+                    f"**Feedback:** {comments or 'Rejection during QA review.'}\n\n"
+                    f"PR closed to maintain a clean repository state for subsequent rework."
+                )
+                gh_service.close_pr(repo_url, pr.pr_number, comment=close_comment)
+                logger.info(f"[QA] Successfully closed rejected GitHub PR #{pr.pr_number}")
+        except Exception as gh_close_err:
+            logger.warning(f"[QA] Failed to close rejected GitHub PR #{pr.pr_number}: {gh_close_err}")
+
+        # Purge ChromaDB overlay so rejected changes do not linger
+        try:
+            from app.services.rag_service import RagService
+            RagService.get_instance().purge_workflow_overlay(workflow_id=pr.workflow_id, story_id=story_id)
+            logger.info(f"[QA] Purged overlay collection for rejected workflow {pr.workflow_id}, story {story_id}")
+        except Exception as purge_err:
+            logger.warning(f"[QA] Could not purge workflow overlay on rejection: {purge_err}")
+
     db.session.commit()
 
 
@@ -391,6 +419,10 @@ def trigger_rework(story_id):
     db.session.add(workflow)
     db.session.commit()
 
+    # Lock story status to IN-PROGRESS immediately to prevent concurrent duplicate reworks
+    story.status = 'IN-PROGRESS'
+    db.session.commit()
+
     # Run orchestrator (it will read QA feedback via ReworkHandler automatically)
     try:
         from app.agents.orchestrator import Orchestrator
@@ -408,6 +440,20 @@ def trigger_rework(story_id):
         }), 200 if result.get('success') else 500
     except Exception as e:
         logger.exception(f"Rework orchestrator failed: {e}")
+        try:
+            from app.services.cleanup_service import CleanupService
+            CleanupService.rollback_pipeline_run(
+                workflow_id=workflow.id,
+                story_id=story.id,
+                failed_stage="Rework Orchestrator Crash",
+                error_msg=str(e),
+                context_story=story
+            )
+        except Exception as cleanup_err:
+            logger.warning(f"CleanupService rollback on rework crash failed: {cleanup_err}")
+            workflow.status = 'Failed'
+            story.status = 'TO-DO'
+            db.session.commit()
         return jsonify({"error": str(e), "workflow_id": workflow.id}), 500
 
 

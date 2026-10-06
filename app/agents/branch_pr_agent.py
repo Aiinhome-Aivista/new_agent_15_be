@@ -520,8 +520,22 @@ class BranchPRAgent(BaseAgent):
                     existing = check_resp.json()[0]
                     self.logger.info(f"Found existing open GitHub PR #{existing.get('number')}: {existing.get('html_url')}")
                     return existing.get('html_url'), existing.get('number'), None
+                # Auto-delete pushed branch to prevent orphaned remote branch
+                self._delete_remote_branch_safe(api_base, org, repo_name, branch_name, headers)
                 return None, None, f"GitHub PR creation 422: {resp.text}"
             else:
+                self._delete_remote_branch_safe(api_base, org, repo_name, branch_name, headers)
                 return None, None, f"GitHub PR creation response ({resp.status_code}): {resp.text[:200]}"
         except Exception as api_err:
+            self._delete_remote_branch_safe(api_base, org, repo_name, branch_name, headers)
             return None, None, f"GitHub PR API failed: {api_err}"
+
+    def _delete_remote_branch_safe(self, api_base, org, repo_name, branch_name, headers):
+        """Helper to cleanly delete a remote branch if PR creation failed after push."""
+        try:
+            clean_ref = branch_name.replace("refs/heads/", "").strip()
+            del_url = f"{api_base}/repos/{org}/{repo_name}/git/refs/heads/{clean_ref}"
+            requests.delete(del_url, headers=headers, timeout=10)
+            self.logger.info(f"[BranchPRAgent] Cleaned up orphaned remote branch '{clean_ref}' after PR creation failure.")
+        except Exception as del_err:
+            self.logger.warning(f"[BranchPRAgent] Could not delete remote branch '{branch_name}': {del_err}")
