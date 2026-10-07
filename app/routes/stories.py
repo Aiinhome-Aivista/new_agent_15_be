@@ -2,6 +2,7 @@ import os
 import re
 import time
 from flask import Blueprint, request, jsonify, current_app
+from app.utils.responses import api_response
 from werkzeug.utils import secure_filename
 from app import db
 from app.models.story import Story
@@ -27,8 +28,8 @@ def sync_stories():
     project_key = data.get('project_key') or request.args.get('project_key')
     result = SyncService.sync_assigned_tasks(user_id=request.current_user.id, project_key=project_key)
     if "error" in result:
-        return jsonify(result), 500
-    return jsonify(result), 200
+        return api_response(500, False, "Error", result)
+    return api_response(200, True, "Success", result)
 
 @stories_bp.route('/', methods=['GET'])
 @require_auth
@@ -48,7 +49,7 @@ def list_stories():
     else:
         stories = Story.query.order_by(Story.created_at.desc()).all()
 
-    return jsonify([s.to_dict() for s in stories]), 200
+    return api_response(200, True, "Success", [s.to_dict() for s in stories])
 
 
 @stories_bp.route('/<int:story_id>', methods=['GET'])
@@ -103,7 +104,7 @@ def get_story(story_id):
         'created_at': w.created_at.isoformat() if w.created_at else None
     } for w in workflows]
 
-    return jsonify(result), 200
+    return api_response(200, True, "Success", result)
 
 
 @stories_bp.route('/', methods=['POST'])
@@ -125,7 +126,7 @@ def create_story():
 
     title = data.get('title', '').strip()
     if not title:
-        return jsonify({"error": "title is required"}), 400
+        return api_response(400, False, "title is required")
 
     description = data.get('description', '')
     acceptance_criteria = data.get('acceptance_criteria', '')
@@ -296,7 +297,7 @@ def create_story():
     resp_dict['attachments'] = uploaded_attachments
     if jira_warning:
         resp_dict['warning'] = jira_warning
-    return jsonify(resp_dict), 201
+    return api_response(201, True, "Created", resp_dict)
 
 
 @stories_bp.route('/<int:story_id>/attachments', methods=['POST'])
@@ -309,7 +310,7 @@ def upload_story_attachments(story_id):
     if not files:
         files = request.files.getlist('files')
     if not files:
-        return jsonify({"error": "No files provided in 'attachments' or 'files'"}), 400
+        return api_response(400, False, "No files provided in 'attachments' or 'files'")
 
     uploaded = []
     for f in files:
@@ -340,10 +341,10 @@ def upload_story_attachments(story_id):
     story.repository_details = details
     db.session.commit()
 
-    return jsonify({
+    return api_response(200, True, "Success", {
         "message": f"Successfully uploaded {len(uploaded)} attachment(s)",
         "attachments": uploaded
-    }), 200
+    })
 
 
 
@@ -359,13 +360,12 @@ def update_story(story_id):
     role = Role.query.get(user.role_id)
 
     if story.owner_id != user.id and (role and role.name != 'Admin'):
-        return jsonify({"error": "You can only edit your own stories"}), 403
+        return api_response(403, False, "You can only edit your own stories")
 
     # Enforce TO-DO / INVALID status rule
     norm_status = (story.status or '').upper().replace('-', '').replace('_', '').replace(' ', '')
     if norm_status not in ['TODO', 'OPEN', 'INVALID']:
-        return jsonify({"error": f"Story cannot be edited because it is in '{story.status}' status. Only TO-DO or INVALID stories can be edited."}), 400
-
+        return api_response(400, False, f"Story cannot be edited because it is in '{story.status}' status. Only TO-DO or INVALID stories can be edited.")
     if story.status == 'INVALID':
         story.status = 'TO-DO'
 
@@ -385,7 +385,7 @@ def update_story(story_id):
 
     if title is not None:
         if not title.strip():
-            return jsonify({"error": "Title cannot be empty"}), 400
+            return api_response(400, False, "Title cannot be empty")
         story.title = title.strip()
 
     if description is not None:
@@ -443,7 +443,7 @@ def update_story(story_id):
     res_dict = story.to_dict()
     if jira_update_res and jira_update_res.get('error'):
         res_dict['warning'] = f"Updated locally, but Jira update had warning: {jira_update_res['error']}"
-    return jsonify(res_dict), 200
+    return api_response(200, True, "Success", res_dict)
 
 
 
@@ -477,7 +477,7 @@ def trigger_run(story_id):
                 is_stale = True
 
         if not is_force and not is_stale:
-            return jsonify({"error": f"Story is already in '{story.status}' state. Cannot trigger a new run."}), 409
+            return api_response(409, False, f"Story is already in '{story.status}' state. Cannot trigger a new run.")
 
         # Mark stale workflow as Failed so clean recovery can proceed
         if latest_wf and latest_wf.status in ('Running', 'Planning', 'Pending'):
@@ -511,7 +511,7 @@ def trigger_run(story_id):
             triggered_by_user_id=request.current_user.id
         )
 
-        return jsonify({
+        return api_response(200, True, "Success", {
             "message": "Orchestrator run complete.",
             "workflow_id": workflow.id,
             "story_id": story_id,
@@ -520,7 +520,7 @@ def trigger_run(story_id):
             "loop_iterations": result.get('loop_iterations'),
             "success": result.get('success', False),
             "error": result.get('error')
-        }), 200 if result.get('success') else 500
+        }) if result.get('success') else 500
 
     except Exception as e:
         logger.exception(f"Orchestrator failed for story {story_id}: {e}")
@@ -545,7 +545,7 @@ def trigger_run(story_id):
         except Exception as comment_err:
             logger.warning(f"Failed to post pipeline crash Jira comment: {comment_err}")
 
-        return jsonify({"error": f"Orchestrator error: {str(e)}", "workflow_id": workflow.id}), 500
+        return api_response(500, False, f"Orchestrator error: {str(e)}")
 
 
 @stories_bp.route('/<int:story_id>/status', methods=['GET'])
@@ -555,7 +555,7 @@ def get_story_status(story_id):
     story = Story.query.get_or_404(story_id)
     latest_workflow = Workflow.query.filter_by(story_id=story_id).order_by(Workflow.created_at.desc()).first()
 
-    return jsonify({
+    return api_response(200, True, "Success", {
         "story_id": story_id,
         "story_status": story.status,
         "workflow": {
@@ -564,7 +564,7 @@ def get_story_status(story_id):
             "current_agent": latest_workflow.current_agent,
             "loop_iteration": latest_workflow.loop_iteration,
         } if latest_workflow else None
-    }), 200
+    })
 
 
 @stories_bp.route('/<int:story_id>/pipeline-logs', methods=['GET'])
@@ -594,14 +594,14 @@ def get_pipeline_logs(story_id):
         Workflow.created_at.desc()
     ).first()
 
-    return jsonify({
+    return api_response(200, True, "Success", {
         "logs": [l.to_dict() for l in logs],
         "workflow": {
             "id":            latest_wf.id,
             "status":        latest_wf.status,
             "current_agent": latest_wf.current_agent,
         } if latest_wf else None
-    }), 200
+    })
 
 
 @stories_bp.route('/<int:story_id>', methods=['DELETE'])
@@ -618,7 +618,7 @@ def delete_story(story_id):
     role = Role.query.get(user.role_id)
 
     if story.owner_id != user.id and (role and role.name != 'Admin'):
-        return jsonify({"error": "You can only delete your own stories"}), 403
+        return api_response(403, False, "You can only delete your own stories")
 
     jira_key = story.jira_story_key or story.external_task_id
     jira_deleted = False
@@ -643,7 +643,7 @@ def delete_story(story_id):
     story_title = story.title
     success = SyncService.delete_story_and_relations(story_id)
     if not success:
-        return jsonify({"error": f"Failed to delete story {story_id} from database."}), 500
+        return api_response(500, False, f"Failed to delete story {story_id}")
 
     msg = f"Story '{story_title}' deleted successfully from app."
     if jira_key:
@@ -652,11 +652,11 @@ def delete_story(story_id):
         elif jira_warning:
             msg += f" ({jira_warning})"
 
-    return jsonify({
+    return api_response(200, True, "Success", {
         "message": msg,
         "jira_deleted": jira_deleted,
         "story_id": story_id
-    }), 200
+    })
 
 
 def _resolve_story_evidence(story):
@@ -741,17 +741,17 @@ def get_story_evidence(story_id):
         evidence_md, filename, meta = _resolve_story_evidence(story)
         jira_key = story.jira_story_key or story.external_task_id or f"STORY-{story.id}"
 
-        return jsonify({
+        return api_response(200, True, "Success", {
             "story_id": story.id,
             "jira_key": jira_key,
             "title": story.title,
             "filename": filename,
             "markdown": evidence_md,
             "metadata": meta,
-        }), 200
+        })
     except Exception as e:
         logger.exception(f"Failed to fetch evidence for story {story_id}: {e}")
-        return jsonify({"error": f"Failed to fetch evidence: {str(e)}"}), 500
+        return api_response(500, False, f"Failed to fetch evidence: {str(e)}")
 
 
 @stories_bp.route('/<int:story_id>/evidence/download', methods=['GET'])
@@ -783,7 +783,7 @@ def download_story_evidence(story_id):
             return response
         except Exception as e:
             logger.exception(f"PDF generation failed for story {story_id}: {e}")
-            return jsonify({"error": f"PDF generation error: {str(e)}"}), 500
+            return api_response(500, False, f"PDF generation error: {str(e)}")
 
     elif fmt == 'md':
         response = make_response(evidence_md)
@@ -804,6 +804,6 @@ def download_story_evidence(story_id):
         response.headers['Content-Disposition'] = f'attachment; filename="{base_name}.json"'
         return response
 
-    return jsonify({"error": f"Unsupported format '{fmt}'. Supported: pdf, md, json"}), 400
+    return api_response(400, False, f"Unsupported format '{fmt}'")
 
 

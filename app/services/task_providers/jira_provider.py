@@ -116,7 +116,7 @@ class JiraTaskProvider(BaseTaskProvider):
             "Accept": "application/json",
             "Content-Type": "application/json"
         }
-        fields = ["summary", "description", "status", "priority", "assignee", "key", "duedate", "customfield_10016", "customfield_10026", "customfield_10028"]
+        fields = ["summary", "description", "status", "priority", "assignee", "key", "duedate", "customfield_10015", "customfield_10016", "customfield_10026", "customfield_10028"]
         
         try:
             payload = {
@@ -175,6 +175,9 @@ class JiraTaskProvider(BaseTaskProvider):
                     
                     due_date_raw = fields_data.get('duedate')
                     due_date = str(due_date_raw).strip() if due_date_raw else None
+                    
+                    start_date_raw = fields_data.get('customfield_10015')
+                    start_date = str(start_date_raw).strip() if start_date_raw else None
 
                     story_points = None
                     for sp_field in ["customfield_10016", "customfield_10026", "customfield_10028"]:
@@ -197,6 +200,7 @@ class JiraTaskProvider(BaseTaskProvider):
                         priority=priority_name,
                         status=status_name,
                         due_date=due_date,
+                        start_date=start_date,
                         story_points=story_points
                     ))
                 logger.info(f"Successfully fetched {len(tasks)} issues from Jira using /rest/api/3/search/jql.")

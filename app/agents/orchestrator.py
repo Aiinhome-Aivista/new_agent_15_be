@@ -250,7 +250,7 @@ class Orchestrator:
             CommentAgent(db=db, config=config).run({
                 'story': context_story,
                 'comment_type': 'ready_for_dev',
-                'new_status': in_progress_status,
+                'new_status': 'IN-PROGRESS',
                 'workflow_id': workflow_id,
                 'extra': {
                     'branch_name': target_branch,
@@ -338,12 +338,43 @@ class Orchestrator:
                                           workflow_id, story_id, 'Repository Analysis', repo_result.error)
             return {"success": False, "stage": "repo_analysis", "error": repo_result.error, "results": results}
 
+        # ── Clarification Gate: pause pipeline if RepoAnalysis is uncertain ──
+        if repo_result.success and isinstance(repo_result.output, dict) and repo_result.output.get('needs_clarification'):
+            from app.agents.clarification_agent import ClarificationAgent
+            clarif_question = repo_result.output.get('clarification_question', 'DEVAA needs your input to proceed.')
+            clarif_options = repo_result.output.get('clarification_options')
+
+            log_event(story_id=story_id or 0, workflow_id=workflow_id,
+                      agent='Clarification', level='warning',
+                      message='⏸️ Pipeline paused — DEVAA needs PO clarification before proceeding',
+                      detail=clarif_question)
+            self._update_workflow_status(workflow, 'needs_clarification', 'Clarification')
+
+            step_clarif = self._make_step(workflow_id, 'Clarification', 'Post clarification request to Jira and email PO.')
+            ClarificationAgent(db=db, config=config).run({
+                'story': context_story,
+                'workflow_id': workflow_id,
+                'clarification_question': clarif_question,
+                'clarification_options': clarif_options,
+            }, workflow_id=workflow_id, step_record=step_clarif)
+
+            return {
+                "success": True,
+                "stage": "clarification",
+                "needs_clarification": True,
+                "clarification_question": clarif_question,
+                "clarification_options": clarif_options,
+                "results": results
+            }
+
         files_count = len(repo_result.output.get('files', [])) if isinstance(repo_result.output, dict) else '?'
         log_event(story_id=story_id or 0, workflow_id=workflow_id,
                   agent='RepoAnalysis', level='success',
                   message=f'✅ Repository Analysis complete — implementation map built',
                   detail=f'{files_count} relevant files identified')
         implementation_map = repo_result.output
+        # Pass repo_dir_map through to context so DeveloperAgent and BranchPRAgent can use it
+        repo_dir_map = implementation_map.get('repo_dir_map', {})
 
         # ═══════════════════════════════════════════════════════════
         # NEW STEP: TRIAGE / INTENT CLASSIFICATION (Smart Rework)
@@ -361,14 +392,26 @@ class Orchestrator:
                 impl_summary = implementation_map.get('analysis', '') if isinstance(implementation_map, dict) else str(implementation_map)[:2000]
                 
                 triage_prompt = (
-                    f"User provided feedback/comment: \"{qa_feedback}\"\n\n"
-                    f"Here is the current state of the codebase for this story:\n{impl_summary}\n"
+                    f"You are DEVAA Triage Agent. A QA reviewer has rejected this story and left feedback.\n\n"
+                    f"QA REJECTION FEEDBACK: \"{qa_feedback}\"\n\n"
+                    f"CURRENT CODEBASE STATE:\n{impl_summary}\n"
                     f"Files identified: {[f.get('path') for f in files_found if isinstance(f, dict)]}\n\n"
-                    "Analyze the user's comment against the codebase state. Classify the required action into ONE of three categories:\n"
-                    "1. 'NEEDS_CODE_CHANGE': The user wants code to be modified, fixed, or a new feature added. OR if you are unsure, default to this.\n"
-                    "2. 'ALREADY_DONE': The user is asking if something is done, and you can confirm it IS done based on the analysis. Or they are just giving an approval (e.g. 'Looks good'). No code changes are needed.\n"
-                    "3. 'NEEDS_CLARIFICATION': The user's request is too ambiguous to proceed, and you must ask for details. If it's a simple clarification, try to proceed instead of blocking.\n\n"
-                    "Respond ONLY with a JSON object: {\"intent\": \"<CATEGORY>\", \"reply\": \"<Your contextual response to the user in human language (in the language they wrote the comment). Answer their question if possible.>\"}"
+                    "CLASSIFICATION RULES (follow strictly):\n"
+                    "1. 'NEEDS_CODE_CHANGE' — Use this if:\n"
+                    "   - The reviewer mentions code is in the wrong place, wrong file, wrong layer (frontend/backend)\n"
+                    "   - The reviewer asks to 'check', 'fix', 'move', 'correct', 'implement', 'add', or 'update' anything\n"
+                    "   - The feedback implies the implementation is incorrect or incomplete\n"
+                    "   - You are even slightly unsure — DEFAULT TO THIS\n"
+                    "   - The feedback is in any language and describes a problem with the code\n"
+                    "2. 'ALREADY_DONE' — Use ONLY if:\n"
+                    "   - The reviewer is explicitly saying 'Looks good', 'Approved', 'LGTM', or similar positive approval\n"
+                    "   - AND you can confirm from the code analysis that the work is genuinely complete\n"
+                    "3. 'NEEDS_CLARIFICATION' — Use ONLY as an absolute last resort if:\n"
+                    "   - The feedback is completely meaningless (random characters, empty, incomprehensible)\n"
+                    "   - There is truly zero indication of what needs to change\n"
+                    "   - NEVER use this just because the feedback is brief or directive\n\n"
+                    "IMPORTANT: When a reviewer says code is in the wrong place or needs to be checked — that is ALWAYS NEEDS_CODE_CHANGE.\n\n"
+                    "Respond ONLY with a JSON object: {\"intent\": \"<CATEGORY>\", \"reply\": \"<Brief acknowledgment of the feedback in the reviewer's language, stating what will be fixed>\"}"
                 )
                 
                 triage_resp = LLMService.generate_response(
@@ -449,7 +492,8 @@ class Orchestrator:
                 'loop_iteration': loop_count,
                 'workflow_id': workflow_id,
                 'workspace_dir': workspace_dir,
-                'reference_collection': reference_collection,   # ← NEW: multi-modal reference sources
+                'repo_dir_map': repo_dir_map,           # multi-repo routing map
+                'reference_collection': reference_collection,
             }, workflow_id=workflow_id, step_record=step_dev)
 
 
@@ -569,6 +613,7 @@ class Orchestrator:
             'triggered_by_user_id': triggered_by_user_id,
             'workspace_dir': workspace_dir,
             'repo_dir': implementation_map.get('repo_dir'),
+            'repo_dir_map': repo_dir_map,   # multi-repo routing: name→path
         }, workflow_id=workflow_id, step_record=step5)
 
         results['branch_pr'] = pr_result.output

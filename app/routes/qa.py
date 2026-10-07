@@ -1,4 +1,5 @@
 from flask import Blueprint, request, jsonify
+from app.utils.responses import api_response
 from app import db
 from app.models.devaa_models import QAReview, PullRequest, AuditLog
 from app.models.story import Story
@@ -51,7 +52,7 @@ def qa_queue():
             'pr': pr.to_dict() if pr else None,
         })
 
-    return jsonify(result), 200
+    return api_response(200, True, "Success", result)
 
 
 @qa_bp.route('/approved', methods=['GET'])
@@ -59,9 +60,9 @@ def qa_queue():
 @require_role(['QA Reviewer', 'Admin', 'Product Owner', 'Engineering Lead'])
 def qa_approved():
     """
-    List all stories approved by QA with review details, reviewer, PR, and workflow metadata.
+    List all stories approved or rejected by QA with review details, reviewer, PR, and workflow metadata.
     """
-    reviews = QAReview.query.filter_by(decision='approved').order_by(QAReview.created_at.desc()).all()
+    reviews = QAReview.query.filter(QAReview.decision.in_(['approved', 'rejected'])).order_by(QAReview.created_at.desc()).all()
 
     result = []
     seen_story_ids = set()
@@ -130,7 +131,7 @@ def qa_approved():
             } if workflow else None,
         })
 
-    return jsonify(result), 200
+    return api_response(200, True, "Success", result)
 
 
 
@@ -153,22 +154,21 @@ def submit_qa_decision(story_id):
             except Exception:
                 db.session.rollback()
         else:
-            return jsonify({"error": f"Story is not in QA-TESTING state (current: {story.status})"}), 409
-
+            return api_response(409, False, f"Story is not in QA-TESTING state (current: {story.status})")
     data = request.get_json() or {}
     decision = data.get('decision', '').lower()
     comments = data.get('comments', '').strip()
 
     if decision not in ('approved', 'rejected'):
-        return jsonify({"error": "decision must be 'approved' or 'rejected'"}), 400
+        return api_response(400, False, "decision must be 'approved' or 'rejected'")
 
     if decision == 'rejected' and not comments:
-        return jsonify({"error": "Comments are required for rejection to enable rework."}), 400
+        return api_response(400, False, "Comments are required for rejection to enable rework.")
 
     # Find the open PR for this story
     pr = PullRequest.query.filter_by(story_id=story_id, pr_status='open').first()
     if not pr:
-        return jsonify({"error": "No open PR found for this story."}), 404
+        return api_response(404, False, "No open PR found for this story.")
 
     # Delegate to approve/reject endpoints via internal logic
     github_merge_result = None
@@ -240,23 +240,12 @@ def submit_qa_decision(story_id):
                     except Exception:
                         pass
 
-                    return jsonify({
-                        "error": f"Merge failed on GitHub: {err_msg}",
-                        "details": "Pull Request could not be merged into the base branch (likely due to merge conflicts or branch protection). Story remains in QA-TESTING.",
-                        "story_id": story_id,
-                        "pr_number": pr.pr_number,
-                        "pr_url": pr.pr_url,
-                        "can_resync": True
-                    }), 409
+                    return api_response(409, False, f"Merge failed on GitHub: {err_msg}")
 
                 logger.info(f"[QA] Successfully merged PR #{pr.pr_number} into target base branch on GitHub.")
             except Exception as gh_err:
                 logger.error(f"[QA] Error calling GitHub merge API: {gh_err}")
-                return jsonify({
-                    "error": f"GitHub API error during merge: {gh_err}",
-                    "story_id": story_id,
-                    "pr_number": pr.pr_number
-                }), 500
+                return api_response(500, False, f"GitHub API error during merge: {gh_err}")
 
         pr.pr_status = 'merged'
         from datetime import datetime
@@ -351,13 +340,13 @@ def submit_qa_decision(story_id):
     except Exception as e:
         logger.warning(f"Audit log failed: {e}")
 
-    return jsonify({
+    return api_response(200, True, "Success", {
         "message": f"QA decision '{decision}' recorded.",
         "story_id": story_id,
         "story_status": new_status,
         "pr_status": pr.pr_status,
         "is_rework": decision == 'rejected'
-    }), 200
+    })
 
 
 @qa_bp.route('/<int:story_id>/rework', methods=['POST'])
@@ -371,12 +360,12 @@ def trigger_rework(story_id):
     story = Story.query.get_or_404(story_id)
 
     if story.status != 'TO-DO':
-        return jsonify({"error": f"Story must be in TO-DO state to trigger rework (current: {story.status})"}), 409
+        return api_response(409, False, f"Story must be in TO-DO state to trigger rework (current: {story.status})")
 
     # Check QA rejections exist
     rejections = QAReview.query.filter_by(story_id=story_id, decision='rejected', is_rework=True).all()
     if not rejections:
-        return jsonify({"error": "No QA rejection found for this story."}), 404
+        return api_response(404, False, "No QA rejection found for this story.")
 
     # Create a new workflow for the rework
     workflow = Workflow(
@@ -399,16 +388,16 @@ def trigger_rework(story_id):
             workflow_id=workflow.id,
             triggered_by_user_id=request.current_user.id
         )
-        return jsonify({
+        return api_response(200, True, "Success", {
             "message": "Rework run complete.",
             "workflow_id": workflow.id,
             "status": result.get('status'),
             "pr_url": result.get('pr_url'),
             "success": result.get('success', False)
-        }), 200 if result.get('success') else 500
+        }) if result.get('success') else 500
     except Exception as e:
         logger.exception(f"Rework orchestrator failed: {e}")
-        return jsonify({"error": str(e), "workflow_id": workflow.id}), 500
+        return api_response(500, False, str(e), {"workflow_id": workflow.id})
 
 
 @qa_bp.route('/<int:story_id>/resync', methods=['POST'])
@@ -422,7 +411,7 @@ def resync_story_branch(story_id):
     story = Story.query.get_or_404(story_id)
     pr = PullRequest.query.filter_by(story_id=story_id, pr_status='open').first()
     if not pr:
-        return jsonify({"error": "No open PR found for this story."}), 404
+        return api_response(404, False, "No open PR found for this story.")
 
     from app.services.github_service import GitHubService
     from flask import current_app

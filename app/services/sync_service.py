@@ -120,46 +120,101 @@ class SyncService:
                             if clean_desc:
                                 task_desc = clean_desc
 
+                # Strip repository configuration block from description and AC
+                repo_block_pattern = r'(?:^|\n)\s*(?:(?:🛠️|⚙️|🌐|📚|📦)\s*)?(?:Repository & Reference Configuration|Repository Configuration|Frontend Configuration|Backend Configuration|Reference Configuration|Target Repo(?:sitory)?(?:\s*\d+)?)'
+                repo_match_desc = re.search(repo_block_pattern, task_desc, re.IGNORECASE)
+                if repo_match_desc:
+                    task_desc = task_desc[:repo_match_desc.start()].strip()
+                    
+                if task_ac:
+                    repo_match_ac = re.search(repo_block_pattern, task_ac, re.IGNORECASE)
+                    if repo_match_ac:
+                        task_ac = task_ac[:repo_match_ac.start()].strip()
+
                 # If raw description contains explicit "Title: ...", use it
                 t_match = re.search(r'(?:^|\n)\s*Title\s*:\s*([^\n\r]+)', raw_desc, re.IGNORECASE)
                 if t_match and t_match.group(1).strip():
                     task_title = t_match.group(1).strip()
 
                 # ── Extract repository details from description if present ──
-                target_repo_name = "main-repo"
-                target_repo_url = default_repo_url
-                target_repo_branch = default_base_branch
-
                 from app.services.token_secret_service import TokenSecretService
 
-                # Primary / Target Repo
-                repo_name_m = re.search(r'(?:^|\n)\s*(?:Target\s*Repo(?:sitory)?|Target|Repository|Repo|Name)\s*[:\-]\s*([^\s\n\r]+)', raw_desc, re.IGNORECASE)
-                repo_url_m = re.search(r'(?:^|\n)\s*(?:Target\s*URL|Target\s*Git|URL|Link|Git)\s*[:\-]\s*(https?://[^\s\n\r]+|git@[^\s\n\r]+)', raw_desc, re.IGNORECASE)
-                branch_m = re.search(r'(?:^|\n)\s*(?:Target\s*Branch|Base\s*Branch|Source\s*Branch|Branch)\s*[:\-]\s*([^\s\n\r]+)', raw_desc, re.IGNORECASE)
+                story_repos = []
 
-                if repo_name_m:
-                    parsed_name = repo_name_m.group(1).strip().strip('`').strip('"').strip("'")
-                    target_repo_name = parsed_name
-                    repo_cfg = TokenSecretService.get_repo_config(parsed_name)
-                    if repo_cfg:
-                        if repo_cfg.get('url'):
-                            target_repo_url = repo_cfg.get('url')
-                        if repo_cfg.get('branch'):
-                            target_repo_branch = repo_cfg.get('branch')
+                # Find all Target Repos using finditer
+                target_repo_matches = list(re.finditer(r'(?:^|\n)\s*(?:Target\s*Repo(?:sitory)?(?:\s*\d+)?|Target(?:\s*\d+)?|Repository|Repo(?:\s*\d+)?)\s*[:\-]\s*([^\s\n\r]+)', raw_desc, re.IGNORECASE))
+                target_repo_indices = [m.start() for m in target_repo_matches]
 
-                if repo_url_m:
-                    target_repo_url = repo_url_m.group(1).strip().strip('`')
-                if branch_m:
-                    target_repo_branch = branch_m.group(1).strip().strip('`')
+                if not target_repo_matches:
+                    repo_info = {
+                        "name": "main-repo",
+                        "url": default_repo_url,
+                        "branch": default_base_branch,
+                        "external_assignee": task.assignee_email,
+                        "priority": task_prio
+                    }
+                    if getattr(task, 'due_date', None):
+                        repo_info["due_date"] = task.due_date
+                    if getattr(task, 'start_date', None):
+                        repo_info["start_date"] = task.start_date
+                    story_repos.append(repo_info)
+                else:
+                    for i, m in enumerate(target_repo_matches):
+                        parsed_name = m.group(1).strip().strip('`').strip('"').strip("'")
+                        
+                        start_idx = m.end()
+                        end_idx = target_repo_indices[i+1] if i + 1 < len(target_repo_indices) else len(raw_desc)
+                        block = raw_desc[start_idx:end_idx]
+                        
+                        ref_idx = re.search(r'(?:^|\n)\s*(?:Reference\s*Repo|Ref\s*Repo|Reference)\s*[:\-]', block, re.IGNORECASE)
+                        if ref_idx:
+                            block = block[:ref_idx.start()]
+                        
+                        b_match = re.search(r'(?:^|\n)\s*(?:Target\s*Branch|Base\s*Branch|Source\s*Branch|Branch)\s*[:\-]\s*([^\s\n\r]+)', block, re.IGNORECASE)
+                        u_match = re.search(r'(?:^|\n)\s*(?:Target\s*URL|Target\s*Git|URL|Link|Git)\s*[:\-]\s*(https?://[^\s\n\r]+|git@[^\s\n\r]+)', block, re.IGNORECASE)
+                        
+                        t_name = parsed_name
+                        t_url = default_repo_url
+                        t_branch = default_base_branch
+                        
+                        repo_cfg = TokenSecretService.get_repo_config(parsed_name)
+                        if repo_cfg:
+                            if repo_cfg.get('url'):
+                                t_url = repo_cfg.get('url')
+                            if repo_cfg.get('branch'):
+                                t_branch = repo_cfg.get('branch')
+                        
+                        if u_match:
+                            t_url = u_match.group(1).strip().strip('`')
+                        if b_match:
+                            t_branch = b_match.group(1).strip().strip('`')
+                            
+                        repo_info = {
+                            "name": t_name,
+                            "url": t_url,
+                            "branch": t_branch,
+                            "external_assignee": task.assignee_email,
+                            "priority": task_prio
+                        }
+                        if getattr(task, 'due_date', None):
+                            repo_info["due_date"] = task.due_date
+                        if getattr(task, 'start_date', None):
+                            repo_info["start_date"] = task.start_date
+                        story_repos.append(repo_info)
+
+                target_repo_branch = story_repos[0]["branch"] if story_repos else default_base_branch
 
                 # Optional Reference Repo
-                ref_repo_m = re.search(r'(?:^|\n)\s*(?:Reference\s*Repo(?:sitory)?|Ref\s*Repo(?:sitory)?|Reference)\s*[:\-]\s*([^\s\n\r]+)', raw_desc, re.IGNORECASE)
-                ref_branch_m = re.search(r'(?:^|\n)\s*(?:Reference\s*Branch|Ref\s*Branch)\s*[:\-]\s*([^\s\n\r]+)', raw_desc, re.IGNORECASE)
+                ref_repo_m = re.search(r'(?:Reference\s*Repo(?:sitory)?|Ref\s*Repo(?:sitory)?|Reference)\s*[:\-]\s*([^\s\n\r]+)', raw_desc, re.IGNORECASE)
                 ref_repo_info = None
                 if ref_repo_m:
                     ref_parsed = ref_repo_m.group(1).strip().strip('`').strip('"').strip("'")
+                    
+                    # Extract branch right after reference repo
+                    ref_branch_m = re.search(r'Branch\s*[:\-]\s*([^\s\n\r]+)', raw_desc[ref_repo_m.end():], re.IGNORECASE)
+                    
                     ref_cfg = TokenSecretService.get_repo_config(ref_parsed)
-                    ref_url = (ref_cfg.get('url') if ref_cfg else None) or (ref_parsed if ref_parsed.startswith('http') or ref_parsed.startswith('git@') else '')
+                    ref_url = (ref_cfg.get('url') if ref_cfg else None) or (ref_parsed if ref_parsed.startswith('http') or ref_parsed.startswith('git@') else f"https://github.com/Devil-008/{ref_parsed}.git")
                     ref_branch = (ref_branch_m.group(1).strip().strip('`') if ref_branch_m else None) or (ref_cfg.get('branch') if ref_cfg else 'main') or 'main'
                     if ref_parsed and ref_url:
                         ref_repo_info = {
@@ -168,6 +223,8 @@ class SyncService:
                             "branch": ref_branch,
                             "is_reference": True
                         }
+                if ref_repo_info:
+                    story_repos.append(ref_repo_info)
 
                 # Map external task status to DEVAA status
                 ext_status = (task.status or 'TO-DO').upper().replace(' ', '-')
@@ -183,7 +240,7 @@ class SyncService:
                 if existing:
                     # Update any missing or modified fields on existing story
                     updated = False
-                    if not existing.source_branch or (branch_m and existing.source_branch != target_repo_branch):
+                    if not existing.source_branch or existing.source_branch != target_repo_branch:
                         existing.source_branch = target_repo_branch
                         updated = True
                     if task_desc is not None and (existing.description or '') != task_desc:
@@ -197,48 +254,23 @@ class SyncService:
                         existing.title = task_title
                         updated = True
                     
-                    details = [dict(d) for d in (existing.repository_details or [{}])]
-                    if details and isinstance(details[0], dict):
-                        first_det = details[0]
-                        det_updated = False
-                        if repo_name_m and first_det.get('name') != target_repo_name:
-                            first_det['name'] = target_repo_name
-                            det_updated = True
-                        if target_repo_url and first_det.get('url') != target_repo_url:
-                            first_det['url'] = target_repo_url
-                            det_updated = True
-                        if target_repo_branch and first_det.get('branch') != target_repo_branch:
-                            first_det['branch'] = target_repo_branch
-                            det_updated = True
-                        if task_prio and first_det.get('priority') != task_prio:
-                            first_det['priority'] = task_prio
-                            det_updated = True
-                        if task.assignee_email and first_det.get('external_assignee') != task.assignee_email:
-                            first_det['external_assignee'] = task.assignee_email
-                            det_updated = True
-                        if task.story_points is not None and first_det.get('story_points') != task.story_points:
-                            first_det['story_points'] = task.story_points
-                            det_updated = True
-                        if task.due_date and first_det.get('due_date') != task.due_date:
-                            first_det['due_date'] = task.due_date
-                            det_updated = True
-                        if ref_repo_info:
-                            has_ref = False
-                            for idx, d in enumerate(details):
-                                if idx > 0 and (d.get('is_reference') or d.get('name') == ref_repo_info['name']):
-                                    d.update(ref_repo_info)
-                                    has_ref = True
-                                    det_updated = True
-                                    break
-                            if not has_ref:
-                                details.append(ref_repo_info)
-                                det_updated = True
+                    # Keep story_points if it exists in previous details and isn't provided by task
+                    old_details = [dict(d) for d in (existing.repository_details or [{}])]
+                    if old_details and isinstance(old_details[0], dict):
+                        old_sp = old_details[0].get('story_points')
+                        if task.story_points is not None:
+                            old_sp = task.story_points
+                        if old_sp is not None:
+                            for sr in story_repos:
+                                sr['story_points'] = old_sp
 
-                        if det_updated:
-                            existing.repository_details = details
-                            from sqlalchemy.orm.attributes import flag_modified
-                            flag_modified(existing, 'repository_details')
-                            updated = True
+                    # Compare and update repository details if changed
+                    import json
+                    if json.dumps(old_details, sort_keys=True) != json.dumps(story_repos, sort_keys=True):
+                        existing.repository_details = story_repos
+                        from sqlalchemy.orm.attributes import flag_modified
+                        flag_modified(existing, 'repository_details')
+                        updated = True
 
                     # Status sync: only update if no active pipeline workflow is currently executing
                     from app.models.workflow import Workflow
@@ -388,19 +420,8 @@ class SyncService:
 
                     continue
 
-                repo_info = {
-                    "name": target_repo_name,
-                    "url": target_repo_url,
-                    "branch": target_repo_branch,
-                    "external_assignee": task.assignee_email,
-                    "priority": task_prio
-                }
-                if task.due_date:
-                    repo_info["due_date"] = task.due_date
-
-                story_repos = [repo_info]
-                if ref_repo_info:
-                    story_repos.append(ref_repo_info)
+                # story_repos list is already built during the extraction phase above.
+                # Just passing through to Story creation.
 
                 # Create a new local DEVAA Story based on the external task
                 new_story = Story(

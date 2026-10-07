@@ -262,6 +262,115 @@ class EmailService:
             return status_result
 
     @staticmethod
+    @classmethod
+    def send_event(cls, event_type, story, context_data=None):
+        """
+        Generic entry point for all lifecycle event notifications.
+        Supported events: pr_raised, qa_approved, qa_rejected, 
+        clarification_requested, clarification_answered, pipeline_done, pipeline_failed
+        """
+        context_data = context_data or {}
+        story_info = story.to_dict() if hasattr(story, "to_dict") else (story if isinstance(story, dict) else {})
+        story_id = story_info.get("id") or (getattr(story, "id", None) if story else None)
+        story_key = story_info.get("jira_story_key") or story_info.get("external_task_id") or f"STORY-{story_id or 'N/A'}"
+        title = story_info.get("title", "")
+
+        recipients = cls.resolve_recipients(story)
+        workflow_id = context_data.get("workflow_id")
+
+        # Route to specific handlers or use generic templates
+        if event_type in ["pr_raised", "pipeline_done"]:
+            # Backwards compatibility / alias to completion email
+            return cls.send_pipeline_completion_email(
+                story=story, 
+                pr_data=context_data.get("pr_data", {}), 
+                evidence_md=context_data.get("evidence_md", ""),
+                workflow_id=workflow_id
+            )
+
+        cfg = cls.get_smtp_config()
+        status_result = {
+            "attempted_recipients": recipients,
+            "event_type": event_type,
+            "smtp_configured": cfg["configured"],
+            "sent": False,
+            "error": None,
+        }
+
+        if not recipients:
+            logger.info(f"[EmailService] No recipient for {story_key}. Skipping {event_type}.")
+            return status_result
+
+        # Determine subject and body based on event type
+        subject = f"[DEVAA] Notification: {story_key}"
+        body_html = f"<html><body><h3>DEVAA Notification for {story_key}</h3>"
+        
+        if event_type == "clarification_requested":
+            subject = f"[DEVAA Action Required] Clarification needed for {story_key}"
+            question = context_data.get("question", "Clarification requested")
+            options = context_data.get("options", [])
+            opt_html = "".join([f"<li>{opt}</li>" for opt in options]) if options else "No specific options provided."
+            body_html += f"<p>DEVAA needs your input to proceed:</p><div style='background:#f1f5f9;padding:15px;'><strong>{question}</strong><ul>{opt_html}</ul></div><p>Please reply via Jira or the DEVAA PO Dashboard.</p>"
+        
+        elif event_type == "clarification_answered":
+            subject = f"[DEVAA] Clarification received for {story_key} - Resuming pipeline"
+            answer = context_data.get("answer", "Answer provided")
+            body_html += f"<p>Clarification received:</p><div style='background:#f1f5f9;padding:15px;'><strong>{answer}</strong></div><p>Pipeline is resuming.</p>"
+        
+        elif event_type == "qa_approved":
+            subject = f"[DEVAA Success] QA Approved for {story_key}"
+            body_html += "<p>The pull request has been approved by QA.</p>"
+        
+        elif event_type == "qa_rejected":
+            subject = f"[DEVAA Rework] QA Rejected for {story_key}"
+            feedback = context_data.get("feedback", "No feedback provided")
+            body_html += f"<p>The pull request was rejected. Rework pipeline initiated.</p><div style='background:#fef2f2;padding:15px;'><strong>Feedback:</strong> {feedback}</div>"
+            
+        elif event_type == "pipeline_failed":
+            subject = f"[DEVAA Error] Pipeline Failed for {story_key}"
+            error_msg = context_data.get("error", "Unknown error")
+            stage = context_data.get("stage", "Unknown stage")
+            body_html += f"<p>The pipeline encountered an error at stage <strong>{stage}</strong>.</p><div style='background:#fef2f2;padding:15px;'>{error_msg}</div>"
+        
+        body_html += "</body></html>"
+        
+        status_result["subject"] = subject
+
+        if not cfg["configured"]:
+            logger.info(f"[EmailService] SMTP not configured. Simulating {event_type} email.")
+            status_result["simulated"] = True
+            cls._log_audit(workflow_id, story_id, f"{event_type}_email_simulated", status_result)
+            return status_result
+
+        # SMTP Delivery
+        try:
+            msg = MIMEMultipart("alternative")
+            msg["Subject"] = subject
+            msg["From"] = cfg["from_email"]
+            msg["To"] = ", ".join(recipients)
+            msg.attach(MIMEText(body_html, "html"))
+
+            if cfg["use_tls"]:
+                server = smtplib.SMTP(cfg["host"], cfg["port"], timeout=15)
+                server.starttls()
+            else:
+                server = smtplib.SMTP_SSL(cfg["host"], cfg["port"], timeout=15)
+
+            if cfg["user"] and cfg["password"]:
+                server.login(cfg["user"], cfg["password"])
+
+            server.sendmail(cfg["from_email"], recipients, msg.as_string())
+            server.quit()
+
+            logger.info(f"[EmailService] Sent {event_type} email to {recipients}")
+            status_result["sent"] = True
+            cls._log_audit(workflow_id, story_id, f"{event_type}_email_sent", status_result)
+            return status_result
+        except Exception as e:
+            logger.warning(f"[EmailService] Failed to send {event_type} email: {e}")
+            status_result["error"] = str(e)
+            cls._log_audit(workflow_id, story_id, f"{event_type}_email_failed", status_result)
+            return status_result
     def _log_audit(workflow_id, story_id, event_type, event_data):
         """Helper to write to DB AuditLog without raising on failure."""
         try:

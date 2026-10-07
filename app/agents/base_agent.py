@@ -108,8 +108,18 @@ class BaseAgent(ABC):
         if step_record is None:
             return
         import json
+
+        def _safe_serializer(obj):
+            """Fallback serializer for non-JSON-serializable objects (e.g. ORM models)."""
+            if hasattr(obj, 'to_dict'):
+                return obj.to_dict()
+            return str(obj)
+
         try:
-            step_record.agent_response = json.dumps(result.output) if result.output else result.error
+            step_record.agent_response = (
+                json.dumps(result.output, default=_safe_serializer)
+                if result.output else result.error
+            )
             step_record.status = 'Completed' if result.success else 'Failed'
             step_record.token_count = result.token_count
             step_record.cost_usd = result.cost_usd
