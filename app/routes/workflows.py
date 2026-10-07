@@ -6,6 +6,7 @@ from flask import Blueprint
 workflows_bp = Blueprint('workflows', __name__)
 
 # from flask import request, jsonify
+from app.utils.responses import api_response
 # from app.models.workflow import Workflow, WorkflowStep
 # from app.models.user import User
 # from app.utils.auth import require_auth, require_role
@@ -22,13 +23,13 @@ workflows_bp = Blueprint('workflows', __name__)
 #     user = request.current_user
 #     workflows = Workflow.query.all() # Keeping it simple for demo purposes
 #     
-#     return jsonify([{
+#     return api_response(200, True, "Success", [{
 #         "id": w.id,
 #         "title": w.title,
 #         "status": w.status,
 #         "owner_id": w.owner_id,
 #         "created_at": w.created_at
-#     } for w in workflows]), 200
+#     } for w in workflows])
 #
 # @workflows_bp.route('/initiate', methods=['POST'])
 # @require_auth
@@ -40,7 +41,7 @@ workflows_bp = Blueprint('workflows', __name__)
 #     provider_override = data.get('provider') # Optional
 #     
 #     if not title or not requirements:
-#         return jsonify({"error": "Title and requirements are required."}), 400
+#         return api_response(400, False, "Title and requirements are required.")
 #
 #     # 1. Persist the new workflow state
 #     workflow = Workflow(
@@ -82,14 +83,14 @@ workflows_bp = Blueprint('workflows', __name__)
 #         step.agent_response = str(e)
 #         step.status = 'Failed'
 #         db.session.commit()
-#         return jsonify({"error": "Failed to generate architecture plan.", "details": str(e)}), 500
+#         return api_response(500, False, "Failed to generate architecture plan.", "details": str(e))
 #
-#     return jsonify({
+#     return api_response(201, True, "Created", {
 #         "message": "Workflow initiated successfully.",
 #         "workflow_id": workflow.id,
 #         "step_id": step.id,
 #         "architecture_plan": step.agent_response
-#     }), 201
+#     })
 #
 # @workflows_bp.route('/<int:workflow_id>', methods=['GET'])
 # @require_auth
@@ -97,7 +98,7 @@ workflows_bp = Blueprint('workflows', __name__)
 #     workflow = Workflow.query.get_or_404(workflow_id)
 #     steps = WorkflowStep.query.filter_by(workflow_id=workflow.id).order_by(WorkflowStep.created_at.asc()).all()
 #     
-#     return jsonify({
+#     return api_response(200, True, "Success", {
 #         "id": workflow.id,
 #         "title": workflow.title,
 #         "status": workflow.status,
@@ -110,4 +111,4 @@ workflows_bp = Blueprint('workflows', __name__)
 #             "response": s.agent_response,
 #             "created_at": s.created_at
 #         } for s in steps]
-#     }), 200
+#     })

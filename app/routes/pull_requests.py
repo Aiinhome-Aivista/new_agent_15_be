@@ -1,4 +1,5 @@
 from flask import Blueprint, request, jsonify
+from app.utils.responses import api_response
 from app import db
 from app.models.devaa_models import PullRequest, QAReview, AuditLog
 from app.models.workflow import Workflow
@@ -16,7 +17,7 @@ logger = logging.getLogger(__name__)
 def list_pull_requests():
     """List all open PRs. Engineering Lead / QA / Admin only."""
     prs = PullRequest.query.order_by(PullRequest.created_at.desc()).all()
-    return jsonify([pr.to_dict() for pr in prs]), 200
+    return api_response(200, True, "Success", [pr.to_dict() for pr in prs])
 
 
 @pull_requests_bp.route('/<int:pr_id>', methods=['GET'])
@@ -52,7 +53,7 @@ def get_pull_request(pr_id):
     # Attach conversation summary from cached pr_summary field (live fetch available via /conversation endpoint)
     result['conversation_summary'] = pr.pr_summary or ''
 
-    return jsonify(result), 200
+    return api_response(200, True, "Success", result)
 
 
 @pull_requests_bp.route('/<int:pr_id>/conversation', methods=['GET'])
@@ -77,30 +78,52 @@ def get_pr_conversation(pr_id):
             repo_url = details[0].get('url', '')
 
     if not repo_url or not pr.pr_number:
-        return jsonify({
+        return api_response(200, True, "Success", {
             "conversation_summary": pr.pr_summary or "No GitHub conversation available.",
             "issue_comments": [],
             "reviews": [],
             "review_comments": [],
             "pr_number": pr.pr_number,
             "note": "repo_url or pr_number missing — returning cached summary only"
-        }), 200
+        })
 
     try:
         from app.services.github_service import GitHubService
-        gh = GitHubService.from_app_config(repo_url=repo_url)
-        conversation = gh.get_pr_conversation(repo_url, pr.pr_number)
-        return jsonify(conversation), 200
+        conversation = {
+            "issue_comments": [],
+            "reviews": [],
+            "review_comments": [],
+            "conversation_summary": ""
+        }
+        
+        primary_repo_url = pr.pr_url.split('/pull/')[0] if pr.pr_url else None
+        if primary_repo_url and pr.pr_number:
+            try:
+                gh_primary = GitHubService.from_app_config(repo_url=primary_repo_url)
+                conv1 = gh_primary.get_pr_conversation(primary_repo_url, pr.pr_number)
+                conversation["issue_comments"].extend(conv1.get("issue_comments", []))
+                conversation["reviews"].extend(conv1.get("reviews", []))
+                conversation["review_comments"].extend(conv1.get("review_comments", []))
+                conversation["conversation_summary"] += f"### Primary PR ({pr.repo_name})\n{conv1.get('conversation_summary', '')}\n\n"
+            except Exception as e:
+                logger.error(f"Failed to fetch primary PR conversation for PR {pr_id}: {e}")
+        
+        secondary_repo_url = pr.secondary_pr_url.split('/pull/')[0] if pr.secondary_pr_url else None
+        if secondary_repo_url and pr.secondary_pr_number:
+            try:
+                gh_sec = GitHubService.from_app_config(repo_url=secondary_repo_url)
+                conv2 = gh_sec.get_pr_conversation(secondary_repo_url, pr.secondary_pr_number)
+                conversation["issue_comments"].extend(conv2.get("issue_comments", []))
+                conversation["reviews"].extend(conv2.get("reviews", []))
+                conversation["review_comments"].extend(conv2.get("review_comments", []))
+                conversation["conversation_summary"] += f"### Secondary PR ({pr.secondary_repo_name})\n{conv2.get('conversation_summary', '')}\n\n"
+            except Exception as e:
+                logger.error(f"Failed to fetch secondary PR conversation for PR {pr_id}: {e}")
+
+        return api_response(200, True, "Success", conversation)
     except Exception as e:
         logger.error(f"Failed to fetch GitHub PR conversation for PR {pr_id}: {e}")
-        return jsonify({
-            "error": f"Failed to fetch GitHub conversation: {str(e)}",
-            "conversation_summary": pr.pr_summary or "",
-            "pr_number": pr.pr_number
-        }), 500
-
-
-
+        return api_response(500, False, f"Failed to fetch GitHub conversation: {str(e)}")
 
 @pull_requests_bp.route('/<int:pr_id>/approve', methods=['POST'])
 @require_auth
@@ -114,7 +137,7 @@ def approve_pr(pr_id):
     pr = PullRequest.query.get_or_404(pr_id)
 
     if pr.pr_status != 'open':
-        return jsonify({"error": f"PR is already '{pr.pr_status}'"}), 409
+        return api_response(409, False, f"PR is already '{pr.pr_status}'")
 
     data = request.get_json() or {}
     comments = data.get('comments', '')
@@ -202,11 +225,11 @@ def approve_pr(pr_id):
     _audit(pr.workflow_id, pr.story_id, request.current_user.id, 'pr_approved',
            {'pr_id': pr_id, 'pr_url': pr.pr_url})
 
-    return jsonify({
+    return api_response(200, True, "Success", {
         "message": "PR approved and merged. Story marked DONE.",
         "pr_id": pr_id,
         "pr_status": "merged"
-    }), 200
+    })
 
 
 @pull_requests_bp.route('/<int:pr_id>/reject', methods=['POST'])
@@ -220,12 +243,12 @@ def reject_pr(pr_id):
     pr = PullRequest.query.get_or_404(pr_id)
 
     if pr.pr_status != 'open':
-        return jsonify({"error": f"PR is already '{pr.pr_status}'"}), 409
+        return api_response(409, False, f"PR is already '{pr.pr_status}'")
 
     data = request.get_json() or {}
     comments = data.get('comments', '').strip()
     if not comments:
-        return jsonify({"error": "Rejection comments are required to trigger rework."}), 400
+        return api_response(400, False, "Rejection comments are required to trigger rework.")
 
     # Mark PR as rejected
     pr.pr_status = 'rejected'
@@ -270,12 +293,12 @@ def reject_pr(pr_id):
     _audit(pr.workflow_id, pr.story_id, request.current_user.id, 'pr_rejected',
            {'pr_id': pr_id, 'comments': comments})
 
-    return jsonify({
+    return api_response(200, True, "Success", {
         "message": "PR rejected. Story moved back to TO-DO. Rework cycle ready.",
         "pr_id": pr_id,
         "pr_status": "rejected",
         "story_status": "TO-DO"
-    }), 200
+    })
 
 
 def _audit(workflow_id, story_id, user_id, event_type, event_data):
@@ -357,5 +380,5 @@ def get_pr_evidence(pr_id):
         response.headers['Content-Disposition'] = f'attachment; filename="{filename}"'
         return response
 
-    return jsonify(report), 200
+    return api_response(200, True, "Success", report)
 

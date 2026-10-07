@@ -45,6 +45,25 @@ def create_app(config_class=Config):
 
     @app.route('/health')
     def health_check():
-        return {"status": "healthy", "service": app.config["PROJECT_NAME"]}
+        from app.utils.responses import api_response
+        return api_response(200, True, "Service is healthy", {"service": app.config["PROJECT_NAME"]})
+
+    from app.utils.responses import api_response
+
+    @app.errorhandler(400)
+    def bad_request_error(e):
+        return api_response(400, False, str(e.description) if hasattr(e, 'description') else "Bad Request")
+
+    @app.errorhandler(404)
+    def not_found_error(e):
+        return api_response(404, False, "Resource not found")
+
+    @app.errorhandler(500)
+    def internal_error(e):
+        return api_response(500, False, "Internal server error")
+
+    @app.errorhandler(Exception)
+    def unhandled_exception(e):
+        return api_response(500, False, str(e))
 
     return app

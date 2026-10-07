@@ -1,4 +1,5 @@
 from flask import Blueprint, request, jsonify
+from app.utils.responses import api_response
 from app.utils.auth import require_auth, require_role
 from app import db
 import logging
@@ -52,10 +53,10 @@ def get_metrics():
         'rejected_prs': PullRequest.query.filter_by(pr_status='rejected').count(),
     }
 
-    return jsonify({
+    return api_response(200, True, "Success", {
         'summary': summary,
         'metrics': metrics
-    }), 200
+    })
 
 
 @admin_bp.route('/audit-logs', methods=['GET'])
@@ -82,7 +83,7 @@ def get_audit_logs():
         query = query.filter_by(event_type=event_type)
 
     logs = query.order_by(AuditLog.created_at.desc()).limit(limit).all()
-    return jsonify([l.to_dict() for l in logs]), 200
+    return api_response(200, True, "Success", [l.to_dict() for l in logs])
 
 
 @admin_bp.route('/guardrail-events', methods=['GET'])
@@ -105,7 +106,7 @@ def get_guardrail_events():
         query = query.filter_by(rail_type=rail_type)
 
     events = query.order_by(GuardrailEvent.triggered_at.desc()).limit(limit).all()
-    return jsonify([e.to_dict() for e in events]), 200
+    return api_response(200, True, "Success", [e.to_dict() for e in events])
 
 
 @admin_bp.route('/workflows', methods=['GET'])
@@ -131,7 +132,7 @@ def list_all_workflows():
             'owner_id': w.owner_id,
             'created_at': w.created_at.isoformat() if w.created_at else None
         })
-    return jsonify(result), 200
+    return api_response(200, True, "Success", result)
 
 
 @admin_bp.route('/workflows/<int:workflow_id>/steps', methods=['GET'])
@@ -142,7 +143,7 @@ def get_workflow_steps(workflow_id):
     from app.models.workflow import WorkflowStep
 
     steps = WorkflowStep.query.filter_by(workflow_id=workflow_id).order_by(WorkflowStep.created_at.asc()).all()
-    return jsonify([{
+    return api_response(200, True, "Success", [{
         'id': s.id,
         'step_type': s.step_type,
         'status': s.status,
@@ -154,7 +155,7 @@ def get_workflow_steps(workflow_id):
         'guardrail_triggered': s.guardrail_triggered,
         'guardrail_reason': s.guardrail_reason,
         'created_at': s.created_at.isoformat() if s.created_at else None
-    } for s in steps]), 200
+    } for s in steps])
 
 
 @admin_bp.route('/users', methods=['GET'])
@@ -166,11 +167,11 @@ def list_users():
     from app.models.role import Role
 
     users = User.query.all()
-    return jsonify([{
+    return api_response(200, True, "Success", [{
         'id': u.id,
         'name': u.name,
         'email': u.email,
         'role': Role.query.get(u.role_id).name if u.role_id else None,
         'is_active': u.is_active,
         'created_at': u.created_at.isoformat() if u.created_at else None
-    } for u in users]), 200
+    } for u in users])

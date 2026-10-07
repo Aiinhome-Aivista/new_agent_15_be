@@ -100,82 +100,6 @@ class BranchPRAgent(BaseAgent):
             random_digits = random.randint(10000000, 99999999)
             branch_name = f"feat/{key_identifier}_{random_digits}"
 
-        # ── Generate comprehensive, professional PR summary via LLM ───────────────────
-        changes = developer_output.get('changes', [])
-        detailed_changes_lines = []
-        for c in changes:
-            f = c.get('file', 'unknown')
-            act = c.get('action', 'modify').capitalize()
-            desc = c.get('description', '')
-            crits = ", ".join(c.get('satisfies_criteria', []))
-            crit_text = f" (Satisfies: {crits})" if crits else ""
-            detailed_changes_lines.append(f"- **`{f}`** ({act}): {desc}{crit_text}")
-        detailed_changes = "\n".join(detailed_changes_lines) if detailed_changes_lines else "No specific files listed."
-
-        try:
-            llm_response = LLMService.generate_response(
-                prompt=PR_SUMMARY_PROMPT.format(
-                    key_identifier=key_identifier,
-                    title=title,
-                    description=description or "No description provided.",
-                    acceptance_criteria=acceptance_criteria or "No acceptance criteria specified.",
-                    dev_summary=developer_output.get('summary', ''),
-                    detailed_changes=detailed_changes,
-                    qa_feedback_section=context.get('qa_feedback', 'None/First Iteration')
-                ),
-                system_instruction="Respond ONLY with valid JSON.",
-                agent_name="BranchPR"
-            )
-            import json
-            llm_response = llm_response.strip()
-            if llm_response.startswith("```"):
-                llm_response = llm_response.split("```")[1]
-                if llm_response.startswith("json"):
-                    llm_response = llm_response[4:]
-            pr_meta = json.loads(llm_response)
-        except Exception as e:
-            self.logger.warning(f"PR summary LLM failed, using structured fallback: {e}")
-            ac_lines = []
-            if acceptance_criteria:
-                for line in str(acceptance_criteria).split("\n"):
-                    clean_line = line.strip().lstrip("-*•0123456789. ")
-                    if clean_line:
-                        ac_lines.append(f"- [x] {clean_line}")
-            ac_formatted = "\n".join(ac_lines) if ac_lines else "- [x] All story acceptance criteria fulfilled and verified."
-
-            fallback_desc = f"""## 📌 Summary
-**Story:** {key_identifier} — {title}
-
-### Problem Statement & Requirement
-{description or 'Automated implementation requested for: ' + title}
-
----
-
-## 🛠️ Changes Implemented (What, Where & Why)
-{detailed_changes}
-
----
-
-## ✅ Acceptance Criteria Coverage
-{ac_formatted}
-
----
-
-## 🔄 Rework & Conversation History
-{context.get('qa_feedback', 'No previous QA feedback for this PR.')}
-
----
-
-## 🔒 Code Preservation & Quality Assurance
-- Pre-existing endpoints, functions, and tests remain intact.
-- Code validated through DEVAA autonomous engineering pipeline.
-"""
-            pr_meta = {
-                "pr_title": f"feat({key_identifier}): {title[:60]}",
-                "pr_description": fallback_desc.strip()
-            }
-
-
         # ── Determine repos and group changes by target_repo ────────────────
         if isinstance(story_repo_details, str):
             try: story_repo_details = json.loads(story_repo_details)
@@ -198,14 +122,40 @@ class BranchPRAgent(BaseAgent):
         repo_name_map = {_get_repo_name(r): r for r in story_repo_details}
         repo_dir_map = developer_output.get('repo_dir_map', {})
         all_changes = developer_output.get('changes', [])
+        repo_names = list(repo_name_map.keys())
+        primary_repo_name = repo_names[0] if repo_names else 'primary-repo'
+        is_multi_repo = len(repo_names) > 1
+
+        def _match_repo(t):
+            if not t: 
+                return primary_repo_name if not is_multi_repo else None
+            
+            t_low = str(t).lower()
+            for r in repo_names:
+                if t_low == r.lower(): return r
+            for r in repo_names:
+                if t_low in r.lower() or r.lower() in t_low: return r
+            if 'frontend' in t_low or 'fe' in t_low or 'ui' in t_low:
+                for r in repo_names:
+                    if '_fe' in r.lower() or 'frontend' in r.lower(): return r
+            if 'backend' in t_low or 'be' in t_low or 'api' in t_low:
+                for r in repo_names:
+                    if '_be' in r.lower() or 'backend' in r.lower() or 'api' in r.lower(): return r
+            
+            return primary_repo_name if not is_multi_repo else None
 
         changes_by_repo = {}
-        primary_repo_name = list(repo_name_map.keys())[0] if repo_name_map else 'primary-repo'
         for c in all_changes:
-            t = c.get('target_repo') or primary_repo_name
-            changes_by_repo.setdefault(t, []).append(c)
-        if not changes_by_repo:
-            changes_by_repo[primary_repo_name] = all_changes
+            t = _match_repo(c.get('target_repo'))
+            if t:
+                changes_by_repo.setdefault(t, []).append(c)
+            else:
+                self.logger.warning(f"Could not match target_repo '{c.get('target_repo')}' for file '{c.get('file')}'. Dropping to prevent cross-repo contamination.")
+
+        if not changes_by_repo and all_changes:
+            err = "CRITICAL ERROR: No changes could be mapped to a valid repository. All target_repo values were invalid or missing."
+            self.logger.error(err)
+            return AgentResult(success=False, error=err)
 
         workspace_dir = context.get('workspace_dir') or developer_output.get('workspace_dir')
 
@@ -233,11 +183,99 @@ class BranchPRAgent(BaseAgent):
                 return None, None, f"No GitHub token for repo '{repo_name}'"
             br = repo_detail.get('branch') or base_branch_global
             ws = os.path.join(workspace_dir, repo_name) if workspace_dir else repo_dir_map.get(repo_name)
-            repo_specific_body = (
-                f"**Note: This PR contains the `{repo_name}` repository changes for this story.** "
-                f"Please check other related repositories for the complete implementation.\n\n"
-                f"{pr_meta['pr_description']}"
-            )
+
+            detailed_changes_lines = []
+            for c in repo_changes:
+                f = c.get('file', 'unknown')
+                act = c.get('action', 'modify').capitalize()
+                desc = c.get('description', '')
+                crits = ", ".join(c.get('satisfies_criteria', []))
+                crit_text = f" (Satisfies: {crits})" if crits else ""
+                detailed_changes_lines.append(f"- **`{f}`** ({act}): {desc}{crit_text}")
+            detailed_changes = "\\n".join(detailed_changes_lines) if detailed_changes_lines else "No specific files listed."
+
+            try:
+                llm_response = LLMService.generate_response(
+                    prompt=PR_SUMMARY_PROMPT.format(
+                        key_identifier=key_identifier,
+                        title=title,
+                        description=description or "No description provided.",
+                        acceptance_criteria=acceptance_criteria or "No acceptance criteria specified.",
+                        dev_summary=f"Changes for repository: {repo_name}. " + developer_output.get('summary', ''),
+                        detailed_changes=detailed_changes,
+                        qa_feedback_section=context.get('qa_feedback', 'None/First Iteration')
+                    ),
+                    system_instruction="Respond ONLY with valid JSON.",
+                    agent_name="BranchPR"
+                )
+                import json
+                llm_response = llm_response.strip()
+                if llm_response.startswith("```"):
+                    llm_response = llm_response.split("```")[1]
+                    if llm_response.startswith("json"):
+                        llm_response = llm_response[4:]
+                pr_meta = json.loads(llm_response)
+            except Exception as e:
+                self.logger.warning(f"PR summary LLM failed, using structured fallback: {e}")
+                ac_lines = []
+                if acceptance_criteria:
+                    for line in str(acceptance_criteria).split("\\n"):
+                        clean_line = line.strip().lstrip("-*•0123456789. ")
+                        if clean_line:
+                            ac_lines.append(f"- [x] {clean_line}")
+                ac_formatted = "\\n".join(ac_lines) if ac_lines else "- [x] All story acceptance criteria fulfilled and verified."
+
+                fallback_desc = f"""## 📌 Summary
+**Story:** {key_identifier} — {title}
+
+### Problem Statement & Requirement
+{description or 'Automated implementation requested for: ' + title}
+
+---
+
+## 🛠️ Changes Implemented (What, Where & Why)
+{detailed_changes}
+
+---
+
+## ✅ Acceptance Criteria Coverage
+{ac_formatted}
+
+---
+
+## 🔄 Rework & Conversation History
+{context.get('qa_feedback', 'No previous QA feedback for this PR.')}
+
+---
+
+## 🔒 Code Preservation & Quality Assurance
+- Pre-existing endpoints, functions, and tests remain intact.
+- Code validated through DEVAA autonomous engineering pipeline.
+"""
+                pr_meta = {
+                    "pr_title": f"feat({key_identifier}): {title[:60]}",
+                    "pr_description": fallback_desc.strip()
+                }
+
+            pr_descriptions_map = developer_output.get('pr_descriptions', {})
+            pr_descriptions_map = developer_output.get("pr_descriptions", {})
+            repo_specific_body = pr_descriptions_map.get(repo_name)
+
+            if repo_specific_body:
+                repo_specific_body = (
+                    f"**Note: This PR contains the `{repo_name}` repository changes for this story.**\n\n"
+                    f"{repo_specific_body}\n\n"
+                    f"---\n## 🔄 Rework & Conversation History\n{context.get('qa_feedback', 'No previous QA feedback for this PR.')}\n\n"
+                    f"---\n## 🔒 Code Preservation & Quality Assurance\n- Pre-existing endpoints, functions, and tests remain intact.\n- Code validated through DEVAA autonomous engineering pipeline."
+                )
+            else:
+                repo_specific_body = (
+                    f"**Note: This PR contains the `{repo_name}` repository changes for this story.** "
+                    f"Please check other related repositories for the complete implementation.\n\n"
+                    f"{pr_meta.get('pr_description', '')}"
+                )
+
+
             return self._create_github_pr(
                 story=story, branch_name=branch_name,
                 pr_title=pr_meta['pr_title'], pr_body=repo_specific_body,
@@ -247,9 +285,15 @@ class BranchPRAgent(BaseAgent):
 
         # ── Primary repo PR ──────────────────────────────────────────────────
         primary_repo_detail = repo_name_map.get(primary_repo_name) or (story_repo_details[0] if story_repo_details else {})
-        primary_changes = changes_by_repo.get(primary_repo_name, all_changes)
+        primary_changes = changes_by_repo.get(primary_repo_name, [])
 
-        pr_url, pr_number, pr_err = _make_pr_for_repo(primary_repo_name, primary_repo_detail, primary_changes)
+        # If LLM completely failed to provide target_repo and changes_by_repo is empty, fallback to all_changes is handled at line 207
+        pr_url, pr_number, pr_err = None, None, None
+        if primary_changes:
+            pr_url, pr_number, pr_err = _make_pr_for_repo(primary_repo_name, primary_repo_detail, primary_changes)
+        else:
+            self.logger.info(f"[BranchPRAgent] No changes targeted for primary repo '{primary_repo_name}'. Skipping PR creation.")
+            pr_url = "skipped"
         if not pr_url:
             err_msg = f"Failed to create primary GitHub PR for '{primary_repo_name}': {pr_err}"
             self.logger.error(err_msg)
@@ -414,7 +458,12 @@ class BranchPRAgent(BaseAgent):
                         return None, None, err
             else:
                 subprocess.run(['git', 'remote', 'set-url', 'origin', auth_repo_url], cwd=repo_dir, check=True)
-                subprocess.run(['git', 'fetch', 'origin'], cwd=repo_dir, check=True)
+                try:
+                    subprocess.run(['git', 'fetch', 'origin'], cwd=repo_dir, check=True, capture_output=True, text=True)
+                except subprocess.CalledProcessError as e:
+                    err_msg = f"Git fetch failed. Error: {e.stderr.strip() if e.stderr else 'Unknown git error'}"
+                    self.logger.error(err_msg)
+                    return None, None, err_msg
 
             # Configure git user identity
             subprocess.run(['git', 'config', 'user.name', 'DEVAA Bot'], cwd=repo_dir, check=True)

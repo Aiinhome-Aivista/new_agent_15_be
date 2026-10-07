@@ -40,13 +40,17 @@ INSTRUCTIONS:
    - DELETION RULE: Never delete or remove any preexisting functions or routes unless the story Acceptance Criteria explicitly and specifically commands their deprecation/deletion.
 3. For every file being created or modified, provide the `full_content` field containing the COMPLETE, 100% PRODUCTION-READY source code for the entire file (including all preserved existing code).
 4. Strictly fulfill every Acceptance Criterion and add real automated test cases covering valid scenarios, error handling, edge cases, and regression checks.
-5. ALWAYS update (or create) the target repository's README.md (or CHANGELOG.md) with a `## Changelog & Recent Updates` entry detailing the changes made in this story. You MUST do this even if README.md is not listed in the Implementation Map. Include the Story ID and title.
+5. SEPARATE PR DESCRIPTIONS: You must generate a highly detailed, separate Pull Request description for EACH repository you modify. Do NOT copy-paste the same description for both repos. In the `pr_descriptions` object, use the exact repository name as the key, and write a thorough explanation of what was changed in that specific repo, the technical reasoning, and how it addresses the ACs.
 6. MULTI-REPO MANDATE: For EVERY change entry, include `"target_repo"` set to the exact repository name from TARGET REPOSITORIES where that file belongs. If only one repo is listed, still include the field.
 7. REPOSITORY AWARENESS (CRITICAL): Read the Tech Stack / Root Files provided in the TARGET REPOSITORIES list. You MUST strictly route backend logic/files to the Backend repo and frontend logic/files to the Frontend repo. Never mix them.
 
 Respond in this exact JSON format:
 {{
-  "summary": "Detailed summary of all changes made",
+  "summary": "Global summary of all changes made across the entire story",
+  "pr_descriptions": {{
+    "devaa_expense_fe": "Detailed PR description explaining EXACTLY what was changed in the frontend repo, why, and how it addresses the AC.",
+    "devaa_expense_be": "Detailed PR description explaining EXACTLY what was changed in the backend repo, why, and how it addresses the AC."
+  }},
   "changes": [
     {{
       "target_repo": "repo-name-here",
@@ -210,6 +214,7 @@ class DeveloperAgent(BaseAgent):
             parsed = json.loads(llm_response)
 
             summary = parsed.get('summary', '')
+            pr_descriptions = parsed.get('pr_descriptions', {})
             changes = parsed.get('changes', [])
 
             # Write changes to the correct repo directory (multi-repo routing)
@@ -321,6 +326,7 @@ class DeveloperAgent(BaseAgent):
                 success=True,
                 output={
                     "summary": summary,
+                    "pr_descriptions": pr_descriptions,
                     "changes": changes,
                     "total_files_changed": parsed.get('total_files_changed', len(changes)),
                     "ready_for_validation": parsed.get('ready_for_validation', True),

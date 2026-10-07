@@ -1,4 +1,5 @@
 from flask import Blueprint, jsonify, current_app
+from app.utils.responses import api_response
 from app.utils.auth import require_auth, require_role
 import logging
 
@@ -67,7 +68,7 @@ def get_connector_status():
         "provider": "github"
     }
 
-    return jsonify(response_data), 200
+    return api_response(200, True, "Success", response_data)
 
 
 @connectors_bp.route('/github/test', methods=['POST'])
@@ -84,11 +85,11 @@ def test_github_connection():
     github_default_branch = (current_app.config.get('GITHUB_DEFAULT_BASE_BRANCH') or os.getenv('GITHUB_DEFAULT_BASE_BRANCH') or 'main').strip()
 
     if not github_token:
-        return jsonify({
+        return api_response(400, False, "Error", {
             "success": False,
             "connected": False,
             "error": "GITHUB_TOKEN is not configured in backend/.env"
-        }), 400
+        })
 
     repo_name = None
     if github_base_url and 'github.com' in github_base_url:
@@ -131,7 +132,7 @@ def test_github_connection():
     except Exception as e:
         logger.warning(f"GitHub API reachability check warning: {e}")
 
-    return jsonify({
+    return api_response(200, True, "Success", {
         "success": True,
         "connected": True,
         "user": user_info,
@@ -140,7 +141,7 @@ def test_github_connection():
         "repo_name": repo_name,
         "default_branch": github_default_branch,
         "repo_url": github_base_url
-    }), 200
+    })
 
 
 @connectors_bp.route('/jira/resources', methods=['GET'])
@@ -158,10 +159,10 @@ def get_jira_resources():
     users = JiraService.get_assignable_users(project_key=project_key)
     sprints = JiraService.get_sprints(project_key=project_key)
 
-    return jsonify({
+    return api_response(200, True, "Success", {
         "projects": projects,
         "users": users,
         "sprints": sprints,
         "default_project": current_app.config.get('JIRA_PROJECT_KEY', '')
-    }), 200
+    })
 
