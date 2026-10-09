@@ -101,9 +101,15 @@ def get_pr_conversation(pr_id):
             try:
                 gh_primary = GitHubService.from_app_config(repo_url=primary_repo_url)
                 conv1 = gh_primary.get_pr_conversation(primary_repo_url, pr.pr_number)
-                conversation["issue_comments"].extend(conv1.get("issue_comments", []))
-                conversation["reviews"].extend(conv1.get("reviews", []))
-                conversation["review_comments"].extend(conv1.get("review_comments", []))
+                for c in conv1.get("issue_comments", []):
+                    c["repo_tag"] = pr.repo_name
+                    conversation["issue_comments"].append(c)
+                for r in conv1.get("reviews", []):
+                    r["repo_tag"] = pr.repo_name
+                    conversation["reviews"].append(r)
+                for c in conv1.get("review_comments", []):
+                    c["repo_tag"] = pr.repo_name
+                    conversation["review_comments"].append(c)
                 conversation["conversation_summary"] += f"### Primary PR ({pr.repo_name})\n{conv1.get('conversation_summary', '')}\n\n"
             except Exception as e:
                 logger.error(f"Failed to fetch primary PR conversation for PR {pr_id}: {e}")
@@ -113,9 +119,15 @@ def get_pr_conversation(pr_id):
             try:
                 gh_sec = GitHubService.from_app_config(repo_url=secondary_repo_url)
                 conv2 = gh_sec.get_pr_conversation(secondary_repo_url, pr.secondary_pr_number)
-                conversation["issue_comments"].extend(conv2.get("issue_comments", []))
-                conversation["reviews"].extend(conv2.get("reviews", []))
-                conversation["review_comments"].extend(conv2.get("review_comments", []))
+                for c in conv2.get("issue_comments", []):
+                    c["repo_tag"] = pr.secondary_repo_name
+                    conversation["issue_comments"].append(c)
+                for r in conv2.get("reviews", []):
+                    r["repo_tag"] = pr.secondary_repo_name
+                    conversation["reviews"].append(r)
+                for c in conv2.get("review_comments", []):
+                    c["repo_tag"] = pr.secondary_repo_name
+                    conversation["review_comments"].append(c)
                 conversation["conversation_summary"] += f"### Secondary PR ({pr.secondary_repo_name})\n{conv2.get('conversation_summary', '')}\n\n"
             except Exception as e:
                 logger.error(f"Failed to fetch secondary PR conversation for PR {pr_id}: {e}")
@@ -169,6 +181,32 @@ def approve_pr(pr_id):
         except Exception as gh_err:
             logger.error(f"[PR] Error calling GitHub merge API: {gh_err}")
             github_merge_result = {"merged": False, "error": str(gh_err)}
+
+    # Merge secondary PR if it exists
+    if getattr(pr, 'secondary_pr_number', None) and getattr(pr, 'secondary_pr_url', None):
+        try:
+            from app.services.github_service import GitHubService
+            sec_repo_url = pr.secondary_pr_url.split('/pull/')[0]
+            gh_service_sec = GitHubService.from_app_config(sec_repo_url)
+            story = Story.query.get(pr.story_id) if pr.story_id else None
+            story_title = story.title if story else f"PR #{pr.secondary_pr_number}"
+            jira_key = story.jira_story_key if story else ""
+            commit_title = f"feat({jira_key or f'PR-{pr.secondary_pr_number}'}): {story_title} (PR #{pr.secondary_pr_number})"
+            commit_msg = f"Approved by QA Reviewer #{request.current_user.id}.\\nDEVAA Automated Implementation."
+            sec_merge_result = gh_service_sec.merge_pr(
+                repo_url=sec_repo_url,
+                pr_number=pr.secondary_pr_number,
+                commit_title=commit_title,
+                commit_message=commit_msg,
+                merge_method="squash"
+            )
+            if sec_merge_result.get("merged"):
+                logger.info(f"[PR] Successfully merged Secondary PR #{pr.secondary_pr_number} on GitHub.")
+            else:
+                logger.warning(f"[PR] Secondary GitHub merge was not completed: {sec_merge_result.get('error')}")
+        except Exception as gh_err:
+            logger.error(f"[PR] Error calling GitHub merge API for secondary PR: {gh_err}")
+
 
     pr.pr_status = 'merged'
     pr.merged_by = request.current_user.id

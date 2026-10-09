@@ -180,7 +180,7 @@ class BranchPRAgent(BaseAgent):
                 or current_app.config.get('GITHUB_TOKEN', '').strip()
             )
             if not token:
-                return None, None, f"No GitHub token for repo '{repo_name}'"
+                return None, None, f"No GitHub token for repo '{repo_name}'", {}
             br = repo_detail.get('branch') or base_branch_global
             ws = os.path.join(workspace_dir, repo_name) if workspace_dir else repo_dir_map.get(repo_name)
 
@@ -276,12 +276,13 @@ class BranchPRAgent(BaseAgent):
                 )
 
 
-            return self._create_github_pr(
+            pr_url, pr_num, pr_error = self._create_github_pr(
                 story=story, branch_name=branch_name,
                 pr_title=pr_meta['pr_title'], pr_body=repo_specific_body,
                 github_token=token, base_branch=br,
                 changes=repo_changes, workspace_dir=ws, repo_url=rurl
             )
+            return pr_url, pr_num, pr_error, pr_meta
 
         # ── Primary repo PR ──────────────────────────────────────────────────
         primary_repo_detail = repo_name_map.get(primary_repo_name) or (story_repo_details[0] if story_repo_details else {})
@@ -289,8 +290,9 @@ class BranchPRAgent(BaseAgent):
 
         # If LLM completely failed to provide target_repo and changes_by_repo is empty, fallback to all_changes is handled at line 207
         pr_url, pr_number, pr_err = None, None, None
+        pr_meta = {"pr_title": f"feat({key_identifier}): {title[:60]}", "pr_description": ""}
         if primary_changes:
-            pr_url, pr_number, pr_err = _make_pr_for_repo(primary_repo_name, primary_repo_detail, primary_changes)
+            pr_url, pr_number, pr_err, pr_meta = _make_pr_for_repo(primary_repo_name, primary_repo_detail, primary_changes)
         else:
             self.logger.info(f"[BranchPRAgent] No changes targeted for primary repo '{primary_repo_name}'. Skipping PR creation.")
             pr_url = "skipped"
@@ -313,7 +315,9 @@ class BranchPRAgent(BaseAgent):
             sec_detail = repo_name_map[sec_name]
             sec_changes = changes_by_repo.get(sec_name, [])
             if sec_changes:
-                sec_url, sec_num, sec_err = _make_pr_for_repo(sec_name, sec_detail, sec_changes)
+                sec_url, sec_num, sec_err, sec_pr_meta = _make_pr_for_repo(sec_name, sec_detail, sec_changes)
+                if not primary_changes and sec_pr_meta:
+                    pr_meta = sec_pr_meta
                 if sec_url:
                     secondary_pr_url = sec_url
                     secondary_pr_number = sec_num
