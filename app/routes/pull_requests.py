@@ -132,6 +132,9 @@ def get_pr_conversation(pr_id):
             except Exception as e:
                 logger.error(f"Failed to fetch secondary PR conversation for PR {pr_id}: {e}")
 
+        if not conversation["conversation_summary"].strip() and pr.pr_summary:
+            conversation["conversation_summary"] = pr.pr_summary
+
         return api_response(200, True, "Success", conversation)
     except Exception as e:
         logger.error(f"Failed to fetch GitHub PR conversation for PR {pr_id}: {e}")

@@ -7,59 +7,67 @@ from app.agents.base_agent import BaseAgent, AgentResult
 from app.services.jira_service import JiraService
 
 
+from collections import defaultdict
+
+
+class SafeDict(defaultdict):
+    def __missing__(self, key):
+        return ""
+
+
 COMMENT_TEMPLATES = {
     "validation_failure": (
         "🚫 *DEVAA Intake Validation Failed*\n\n"
         "The story could not be processed due to missing or incomplete fields:\n\n"
         "{details}\n\n"
-        "Please update the story and trigger a new run."
+        "Please update the story on Jira/DEVAA dashboard and trigger a new run."
     ),
     "ready_for_dev": (
-        "🚀 *DEVAA: Story Validated — Starting Development*\n\n"
-        "All mandatory fields and acceptance criteria have been verified. The automated development pipeline has been initiated.\n\n"
-        "• **Target Branch:** `{branch_name}` (Base: `{base_branch}`)\n"
-        "• **Status:** `{new_status}`\n"
-        "• **Pipeline:** Intake Passed ➔ Repository Analysis ➔ Implementation ➔ Self-Validation ➔ PR Creation\n\n"
+        "🚀 *DEVAA: Story Validated — Development Pipeline Initiated*\n\n"
+        "All mandatory fields and acceptance criteria have been verified.\n\n"
+        "{repositories_info}"
+        "• **Target Feature Branch:** `{branch_name}`\n"
+        "• **Pipeline Status:** `{new_status}`\n"
+        "• **Execution Path:** Intake Passed ➔ Repo Analysis ➔ Implementation ➔ Self-Validation ➔ PR Creation\n\n"
         "**Acceptance Criteria In Scope:**\n"
         "{acceptance_criteria}\n\n"
         "Developer Agent is now implementing changes to satisfy all acceptance criteria."
     ),
     "pr_ready": (
         "🔀 *DEVAA: Pull Request Ready for QA Review*\n\n"
-        "**PR:** {pr_url}\n"
-        "**Branch:** `{branch_name}`\n\n"
-        "**Changed Files:**\n{changed_files}\n\n"
+        "{prs_info}\n\n"
+        "**Changed Files Summary:**\n{changed_files}\n\n"
         "**Summary:** {pr_summary}\n\n"
-        "Please review and approve/reject on the QA dashboard."
+        "Please review and approve/reject on the DEVAA QA dashboard."
     ),
     "rework_triggered": (
         "🔁 *DEVAA: Rework Cycle Initiated*\n\n"
-        "QA rejected the previous implementation with the following feedback:\n\n"
+        "QA Reviewer rejected the previous implementation with the following feedback:\n\n"
         "{qa_feedback}\n\n"
-        "DEVAA is re-running the development pipeline addressing the above comments. "
-        "A new PR will be created upon completion."
+        "DEVAA is re-running the automated development pipeline addressing all of the above comments. "
+        "A fresh Pull Request will be created upon validation."
     ),
     "task_done_pr_raised": (
-        "🚀 *DEVAA: Task Done — PR Raised*\n\n"
-        "**PR:** {pr_url}\n"
-        "**Branch:** `{branch_name}`\n\n"
-        "📄 Evidence report `{evidence_filename}` is available on the DEVAA PO Dashboard for download and review.\n\n"
-        "**Summary:** {pr_summary}\n\n"
-        "Story moved to QA-TESTING. Human review required."
+        "🚀 *DEVAA: Task Complete — Pull Request(s) Raised*\n\n"
+        "{prs_info}\n\n"
+        "📄 **Evidence Report:** `{evidence_filename}` has been generated and archived in `backend/evidence/` (available on DEVAA PO / QA Dashboard for audit & download).\n\n"
+        "**Developer Implementation Summary:**\n"
+        "{pr_summary}\n\n"
+        "**Status:** Story moved to QA-TESTING. Human QA review required."
     ),
     "pipeline_failed": (
         "⚠️ *DEVAA: Pipeline Failed*\n\n"
         "The automated development pipeline encountered an error and could not complete.\n\n"
         "• **Failed At:** `{failed_stage}`\n"
         "• **Error:** {error_detail}\n"
-        "• **Workflow ID:** {workflow_id}\n\n"
-        "Story has been moved back to TO-DO. You can re-trigger the pipeline from the DEVAA dashboard after addressing any issues.\n\n"
-        "Check the DEVAA Pipeline Logs for detailed diagnostics."
+        "• **Workflow ID:** #{workflow_id}\n\n"
+        "Story has been moved back to TO-DO with an automated clean rollback.\n"
+        "Check DEVAA Live Pipeline Logs for detailed diagnostics."
     ),
     "done": (
-        "🎉 *DEVAA: Story Complete*\n\n"
-        "The PR has been approved and merged. This story is now DONE.\n\n"
-        "**Merged PR:** {pr_url}"
+        "🎉 *DEVAA: Story Complete & Merged*\n\n"
+        "All Pull Requests have been approved and successfully merged into target base branch(es). This story is now DONE.\n\n"
+        "{merged_prs_info}"
     ),
     "general": (
         "{body}"
@@ -77,18 +85,60 @@ class CommentAgent(BaseAgent):
         story = context.get('story')
         comment_type = context.get('comment_type', 'ready_for_dev')
         new_status = context.get('new_status')
-        extra = context.get('extra', {})
+        extra = dict(context.get('extra', {}))
         workflow_id = context.get('workflow_id')
 
         if not story:
             return AgentResult(success=False, error="No story provided to CommentAgent.")
 
+        # ── Compute dynamic helpers for multi-repo and multi-PR ───
+        pr_url = extra.get('pr_url', '')
+        branch_name = extra.get('branch_name', '')
+        repo_name = extra.get('repo_name', 'Primary Repository')
+        secondary_pr_url = extra.get('secondary_pr_url')
+        secondary_branch = extra.get('secondary_branch_name') or branch_name
+        secondary_repo_name = extra.get('secondary_repo_name', 'Secondary Repository')
+
+        if 'prs_info' not in extra:
+            if secondary_pr_url and secondary_pr_url != 'skipped':
+                extra['prs_info'] = (
+                    "**📦 Target Repositories & Pull Requests:**\n"
+                    f"• **`{repo_name}` (Primary):** {pr_url} (Branch: `{branch_name}`)\n"
+                    f"• **`{secondary_repo_name}` (Secondary):** {secondary_pr_url} (Branch: `{secondary_branch}`)"
+                )
+            elif pr_url and pr_url != '#':
+                extra['prs_info'] = (
+                    "**📦 Target Repository & Pull Request:**\n"
+                    f"• **`{repo_name}`:** {pr_url} (Branch: `{branch_name}`)"
+                )
+            else:
+                extra['prs_info'] = f"**Branch:** `{branch_name}`"
+
+        if 'merged_prs_info' not in extra:
+            if secondary_pr_url and secondary_pr_url != 'skipped':
+                extra['merged_prs_info'] = (
+                    f"• **`{repo_name}`:** {pr_url}\n"
+                    f"• **`{secondary_repo_name}`:** {secondary_pr_url}"
+                )
+            elif pr_url:
+                extra['merged_prs_info'] = f"• **Merged PR:** {pr_url}"
+            else:
+                extra['merged_prs_info'] = "Pull Requests merged."
+
+        if 'repositories_info' not in extra and extra.get('target_repos'):
+            repos_list = extra.get('target_repos')
+            if isinstance(repos_list, list):
+                repo_strs = [f"`{r.get('name')}` (Base: `{r.get('branch', 'main')}`)" for r in repos_list if isinstance(r, dict)]
+                extra['repositories_info'] = f"• **Target Repositories:** {', '.join(repo_strs)}\n" if repo_strs else ""
+
         # ── Build comment body ────────────────────────────────────
         template = COMMENT_TEMPLATES.get(comment_type, COMMENT_TEMPLATES['ready_for_dev'])
         try:
-            comment_body = template.format(**extra)
-        except KeyError:
-            comment_body = template  # use as-is if format keys missing
+            safe_extra = SafeDict(str, **extra)
+            comment_body = template.format_map(safe_extra)
+        except Exception as fmt_err:
+            self.logger.warning(f"Error formatting template {comment_type}: {fmt_err}")
+            comment_body = template
 
         # ── Try Jira comment ──────────────────────────────────────
         jira_comment_id = None

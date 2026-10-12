@@ -348,6 +348,9 @@ def submit_qa_decision(story_id):
             'workflow_id': pr.workflow_id,
             'extra': {
                 'pr_url': pr.pr_url or '#',
+                'repo_name': pr.repo_name or 'Primary Repository',
+                'secondary_pr_url': pr.secondary_pr_url,
+                'secondary_repo_name': pr.secondary_repo_name or 'Secondary Repository',
                 'qa_feedback': comments
             }
         }, workflow_id=pr.workflow_id)

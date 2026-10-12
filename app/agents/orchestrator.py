@@ -259,7 +259,8 @@ class Orchestrator:
                     'branch_name': target_branch,
                     'base_branch': base_branch,
                     'new_status': in_progress_status,
-                    'acceptance_criteria': ac_text
+                    'acceptance_criteria': ac_text,
+                    'target_repos': repo_details if isinstance(repo_details, list) else None,
                 }
             }, workflow_id=workflow_id, step_record=step_dev_start)
             log_event(story_id=story_id or 0, workflow_id=workflow_id,
@@ -658,10 +659,12 @@ class Orchestrator:
             )
             evidence_bytes = evidence_md.encode('utf-8')
 
-            # Save evidence.md locally to workspace root
+            # Save evidence.md locally to backend/evidence folder
             try:
-                proj_root = os.path.abspath(os.path.join(current_app.root_path, '..', '..'))
-                local_evidence_path = os.path.join(proj_root, evidence_filename)
+                backend_root = os.path.abspath(os.path.join(current_app.root_path, '..'))
+                evidence_dir = os.path.join(backend_root, 'evidence')
+                os.makedirs(evidence_dir, exist_ok=True)
+                local_evidence_path = os.path.join(evidence_dir, evidence_filename)
                 with open(local_evidence_path, 'w', encoding='utf-8') as ef:
                     ef.write(evidence_md)
                 logger.info(f"[Orchestrator] Saved evidence locally to {local_evidence_path}")
@@ -674,10 +677,10 @@ class Orchestrator:
                       detail=f'Branch: {pr_out.get("branch_name")}')
 
             # ── NOTE: Per DEVAA policy, Evidence is NOT attached to Jira (Jira attachments are strictly input references)
-            # Full evidence is stored in DEVAA DB and preserved locally for PO Dashboard download & view.
+            # Full evidence is stored in DEVAA DB and preserved in backend/evidence for PO Dashboard download & view.
             log_event(story_id=story_id or 0, workflow_id=workflow_id,
                       agent='Orchestrator', level='info',
-                      message=f'📄 Evidence report `{evidence_filename}` stored locally & in DB for PO Dashboard (Jira attachment skipped per policy)')
+                      message=f'📄 Evidence report `{evidence_filename}` saved in `backend/evidence/` & DB for PO Dashboard')
 
             # ── Point 6: Dispatch Pipeline Completion & Evidence Email ──
             try:
@@ -730,6 +733,10 @@ class Orchestrator:
             'extra': {
                 'pr_url': pr_out.get('pr_url', '#'),
                 'branch_name': pr_out.get('branch_name', ''),
+                'repo_name': pr_out.get('repo_name', 'Primary Repository'),
+                'secondary_pr_url': pr_out.get('secondary_pr_url'),
+                'secondary_branch_name': pr_out.get('secondary_branch_name') or pr_out.get('branch_name', ''),
+                'secondary_repo_name': pr_out.get('secondary_repo_name'),
                 'pr_summary': developer_output.get('summary', ''),
                 'evidence_filename': evidence_filename or 'evidence.md',
             }

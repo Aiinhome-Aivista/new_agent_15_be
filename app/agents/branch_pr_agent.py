@@ -257,28 +257,51 @@ class BranchPRAgent(BaseAgent):
                     "pr_description": fallback_desc.strip()
                 }
 
+            pr_desc = pr_meta.get('pr_description', '')
             pr_descriptions_map = developer_output.get('pr_descriptions', {})
-            pr_descriptions_map = developer_output.get("pr_descriptions", {})
-            repo_specific_body = pr_descriptions_map.get(repo_name)
+            developer_repo_note = pr_descriptions_map.get(repo_name, '').strip()
 
-            if repo_specific_body:
-                repo_specific_body = (
-                    f"**Note: This PR contains the `{repo_name}` repository changes for this story.**\n\n"
-                    f"{repo_specific_body}\n\n"
-                    f"---\n## 🔄 Rework & Conversation History\n{context.get('qa_feedback', 'No previous QA feedback for this PR.')}\n\n"
-                    f"---\n## 🔒 Code Preservation & Quality Assurance\n- Pre-existing endpoints, functions, and tests remain intact.\n- Code validated through DEVAA autonomous engineering pipeline."
-                )
-            else:
-                repo_specific_body = (
-                    f"**Note: This PR contains the `{repo_name}` repository changes for this story.** "
-                    f"Please check other related repositories for the complete implementation.\n\n"
-                    f"{pr_meta.get('pr_description', '')}"
+            arch_note_section = ""
+            if developer_repo_note:
+                arch_note_section = (
+                    f"> 💡 **Developer Architectural Note for `{repo_name}`:**\n"
+                    f"> {developer_repo_note}\n\n"
                 )
 
+            # Build Cross-Repository Section for Multi-Repo setups
+            other_repo_names = [r for r in repo_names if r != repo_name]
+            cross_repo_section = ""
+            if other_repo_names:
+                companion_blocks = []
+                for o_name in other_repo_names:
+                    o_changes = changes_by_repo.get(o_name, [])
+                    if o_changes:
+                        o_lines = [
+                            f"- **`{c.get('file', 'unknown')}`** ({str(c.get('action', 'modify')).capitalize()}): {c.get('description', '')}"
+                            for c in o_changes
+                        ]
+                        companion_blocks.append(
+                            f"### 📦 Companion Repository: `{o_name}`\n"
+                            f"This user story spans across multiple repositories. Complementary changes are implemented in `{o_name}` (Branch: `{branch_name}`):\n"
+                            + "\n".join(o_lines)
+                        )
+                if companion_blocks:
+                    cross_repo_section = (
+                        "\n\n---\n## 🔗 Associated Pull Requests & Cross-Repository Changes\n\n"
+                        + "\n\n".join(companion_blocks)
+                        + "\n\n> ℹ️ *Reviewers: Both repositories are synchronized under this story. Please review companion changes to ensure full system integration.*"
+                    )
+
+            final_pr_body = (
+                f"**Note: This Pull Request contains the `{repo_name}` repository changes for story `{key_identifier}`.**\n\n"
+                + arch_note_section
+                + pr_desc
+                + cross_repo_section
+            )
 
             pr_url, pr_num, pr_error = self._create_github_pr(
                 story=story, branch_name=branch_name,
-                pr_title=pr_meta['pr_title'], pr_body=repo_specific_body,
+                pr_title=pr_meta['pr_title'], pr_body=final_pr_body,
                 github_token=token, base_branch=br,
                 changes=repo_changes, workspace_dir=ws, repo_url=rurl
             )
@@ -288,7 +311,6 @@ class BranchPRAgent(BaseAgent):
         primary_repo_detail = repo_name_map.get(primary_repo_name) or (story_repo_details[0] if story_repo_details else {})
         primary_changes = changes_by_repo.get(primary_repo_name, [])
 
-        # If LLM completely failed to provide target_repo and changes_by_repo is empty, fallback to all_changes is handled at line 207
         pr_url, pr_number, pr_err = None, None, None
         pr_meta = {"pr_title": f"feat({key_identifier}): {title[:60]}", "pr_description": ""}
         if primary_changes:
@@ -308,6 +330,7 @@ class BranchPRAgent(BaseAgent):
         secondary_pr_number = None
         secondary_repo_name_val = None
         secondary_branch = None
+        sec_pr_meta = None
 
         repo_names_list = list(repo_name_map.keys())
         if len(repo_names_list) >= 2:
@@ -326,6 +349,16 @@ class BranchPRAgent(BaseAgent):
                     self.logger.info(f"[BranchPRAgent] Secondary PR created: {sec_url} for '{sec_name}'")
                 else:
                     self.logger.warning(f"[BranchPRAgent] Secondary PR failed (non-fatal): {sec_err}")
+
+        # Combine PR descriptions for DB persistence if multi-repo
+        combined_pr_summary = pr_meta.get('pr_description', '')
+        if secondary_pr_url and secondary_repo_name_val and sec_pr_meta and sec_pr_meta.get('pr_description'):
+            combined_pr_summary = (
+                f"### 📦 Primary Repository ({primary_repo_name})\n\n"
+                f"{pr_meta.get('pr_description', '')}\n\n"
+                f"---\n\n### 📦 Secondary Repository ({secondary_repo_name_val})\n\n"
+                f"{sec_pr_meta.get('pr_description', '')}"
+            )
 
         # ── Build Evidence Report ─────────────────────────────────────────────
         story_dict = story.to_dict() if hasattr(story, 'to_dict') else (story if isinstance(story, dict) else {})
@@ -358,7 +391,7 @@ class BranchPRAgent(BaseAgent):
             secondary_pr_number=secondary_pr_number,
             secondary_repo_name=secondary_repo_name_val,
             pr_status='open',
-            pr_summary=pr_meta.get('pr_description', ''),
+            pr_summary=combined_pr_summary,
             changed_files=[c.get('file') for c in all_changes],
             evidence_report=evidence_report,
             created_by=context.get('triggered_by_user_id')

@@ -43,10 +43,11 @@ INSTRUCTIONS:
 5. SEPARATE PR DESCRIPTIONS: You must generate a highly detailed, separate Pull Request description for EACH repository you modify. Do NOT copy-paste the same description for both repos. In the `pr_descriptions` object, use the exact repository name as the key, and write a thorough explanation of what was changed in that specific repo, the technical reasoning, and how it addresses the ACs.
 6. MULTI-REPO MANDATE: For EVERY change entry, include `"target_repo"` set to the exact repository name from TARGET REPOSITORIES where that file belongs. If only one repo is listed, still include the field.
 7. REPOSITORY AWARENESS (CRITICAL): Read the Tech Stack / Root Files provided in the TARGET REPOSITORIES list. You MUST strictly route backend logic/files to the Backend repo and frontend logic/files to the Frontend repo. Never mix them.
+8. TECHNICAL RATIONALE (WHY): In the `description` field for every change entry, you must explicitly state WHAT was changed AND WHY it was changed (the architectural justification and functional necessity) so it is fully captured in the audit evidence.
 
 Respond in this exact JSON format:
 {{
-  "summary": "Global summary of all changes made across the entire story",
+  "summary": "Global summary of all changes made across the entire story and technical rationale",
   "pr_descriptions": {{
     "devaa_expense_fe": "Detailed PR description explaining EXACTLY what was changed in the frontend repo, why, and how it addresses the AC.",
     "devaa_expense_be": "Detailed PR description explaining EXACTLY what was changed in the backend repo, why, and how it addresses the AC."
@@ -56,7 +57,7 @@ Respond in this exact JSON format:
       "target_repo": "repo-name-here",
       "file": "path/to/file.py",
       "action": "create|modify|delete",
-      "description": "Explanation of changes made",
+      "description": "Clear explanation of what was changed and WHY it was changed",
       "code_snippet": "Key diff or function modified",
       "full_content": "The COMPLETE working source code of the entire file",
       "satisfies_criteria": ["criterion 1", "criterion 2"]

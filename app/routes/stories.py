@@ -667,10 +667,15 @@ def _resolve_story_evidence(story):
     safe_key = re.sub(r'[^a-zA-Z0-9_-]', '_', jira_key)
     safe_title = re.sub(r'[^a-zA-Z0-9_-]', '_', (story.title or 'task').replace(' ', '_'))[:30]
 
-    # 1. Look for existing local evidence file
-    proj_root = os.path.abspath(os.path.join(current_app.root_path, '..', '..'))
-    pattern = os.path.join(proj_root, f"evidence_{safe_key}*.md")
+    # 1. Look for existing local evidence file in backend/evidence directory
+    backend_root = os.path.abspath(os.path.join(current_app.root_path, '..'))
+    evidence_dir = os.path.join(backend_root, 'evidence')
+    pattern = os.path.join(evidence_dir, f"evidence_{safe_key}*.md")
     matching_files = glob.glob(pattern)
+    if not matching_files:
+        # Fallback to legacy project root
+        proj_root = os.path.abspath(os.path.join(current_app.root_path, '..', '..'))
+        matching_files = glob.glob(os.path.join(proj_root, f"evidence_{safe_key}*.md"))
     if matching_files:
         try:
             with open(matching_files[0], 'r', encoding='utf-8') as f:
