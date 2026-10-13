@@ -32,7 +32,7 @@ class Story(db.Model):
         lazy=True
     )
 
-    def to_dict(self):
+    def to_dict(self, has_rework=None, has_run=None):
         details = self.repository_details or [{}]
         first_det = details[0] if isinstance(details, list) and len(details) > 0 and isinstance(details[0], dict) else {}
         is_created_in_devaa = bool(
@@ -41,8 +41,18 @@ class Story(db.Model):
             self.external_provider == 'manual'
         )
         # Check if story has any QA rejection
-        from app.models.devaa_models import QAReview
-        has_rework = QAReview.query.filter_by(story_id=self.id, decision='rejected', is_rework=True).first() is not None
+        if has_rework is None:
+            from app.models.devaa_models import QAReview
+            has_rework = QAReview.query.filter_by(story_id=self.id, decision='rejected', is_rework=True).first() is not None
+
+        # Check if story has been executed at least once (has workflows or pipeline logs)
+        if has_run is None:
+            from app.models.workflow import Workflow
+            from app.models.devaa_models import PipelineLog
+            has_run = bool(
+                Workflow.query.filter_by(story_id=self.id).first() is not None or
+                PipelineLog.query.filter_by(story_id=self.id).first() is not None
+            )
 
         return {
             'id': self.id,
@@ -51,6 +61,7 @@ class Story(db.Model):
             'external_provider': self.external_provider,
             'is_created_in_devaa': is_created_in_devaa,
             'has_rework': has_rework,
+            'has_run': has_run,
             'title': self.title,
             'description': self.description,
             'acceptance_criteria': self.acceptance_criteria,
