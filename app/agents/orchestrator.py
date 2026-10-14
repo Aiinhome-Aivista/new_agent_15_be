@@ -573,10 +573,16 @@ class Orchestrator:
                 # Update feedback for next dev iteration (validator feedback takes priority)
                 val_out = val_result.output if isinstance(val_result.output, dict) else {}
                 validator_qa_feedback = val_out.get('feedback_for_developer', '') or validator_qa_feedback or ''
-                log_event(story_id=story_id or 0, workflow_id=workflow_id,
-                          agent='Validator', level='warning',
-                          message=f'⚠️ Validator rejected iteration {loop_count} — retrying with feedback',
-                          detail=str(validator_qa_feedback)[:300])
+                if loop_count < self.max_loops:
+                    log_event(story_id=story_id or 0, workflow_id=workflow_id,
+                              agent='Validator', level='warning',
+                              message=f'⚠️ Validator rejected iteration {loop_count} — retrying with feedback',
+                              detail=str(validator_qa_feedback)[:300])
+                else:
+                    log_event(story_id=story_id or 0, workflow_id=workflow_id,
+                              agent='Validator', level='warning',
+                              message=f'⚠️ Validator rejected iteration {loop_count} (max iterations reached)',
+                              detail=str(validator_qa_feedback)[:300])
                 logger.info(f"[Orchestrator] Validator rejected (loop {loop_count}). Feedback: {str(validator_qa_feedback)[:100]}")
 
         if not validation_passed:
@@ -587,6 +593,9 @@ class Orchestrator:
                 self._record_metric(workflow_id, story_id, 'acceptance_criteria_coverage', 0.9,
                                      f'Completed {loop_count} iterations with code changes, forwarded to QA review')
                 self._record_metric(workflow_id, story_id, 'loop_iterations', float(loop_count))
+                log_event(story_id=story_id or 0, workflow_id=workflow_id,
+                          agent='Validator', level='warning',
+                          message=f'⚠️ Max self-correction iterations ({loop_count}/{self.max_loops}) reached with {len(changes)} change(s) — proceeding to PR for QA review')
             else:
                 logger.warning(f"[Orchestrator] Max loop iterations ({self.max_loops}) reached without code or validation pass.")
                 self._record_metric(workflow_id, story_id, 'acceptance_criteria_coverage', 0.0,
