@@ -5,6 +5,9 @@ Now supports multi-repo: each change carries a `target_repo` field so
 BranchPRAgent can route commits to the correct repository.
 Can receive QA feedback for rework cycles.
 """
+import os
+import json
+import logging
 from app.agents.base_agent import BaseAgent, AgentResult
 from app.services.llm_service import LLMService
 
@@ -80,6 +83,111 @@ You MUST address ALL of the above QA comments in this implementation.
 
 class DeveloperAgent(BaseAgent):
     agent_name = "Developer"
+
+    def _save_prompt_to_scratch(
+        self, context: dict, prompt: str, title: str, description: str,
+        acceptance_criteria: str, repo_names_list: str, impl_map: dict,
+        existing_code_section: str, reference_section: str, rework_section: str,
+        loop_iteration: int
+    ) -> str:
+        """
+        Saves the formatted input context and raw prompt to backend/scratch/ as Markdown.
+        Creates both a specific run file and overwrites 'latest_developer_prompt.md'.
+        """
+        try:
+            from app.utils.time_utils import get_ist_now
+            timestamp = get_ist_now().strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            from datetime import datetime
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+        story = context.get('story')
+        story_id = getattr(story, 'id', None) or (story.get('id', 0) if isinstance(story, dict) else 0)
+        workflow_id = context.get('workflow_id', 0)
+
+        scratch_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', 'scratch'))
+        os.makedirs(scratch_dir, exist_ok=True)
+
+        files_to_modify_val = impl_map.get('files_to_modify', [])
+        files_to_modify_str = json.dumps(files_to_modify_val, indent=2) if isinstance(files_to_modify_val, (list, dict)) else str(files_to_modify_val)
+
+        patterns_found_val = impl_map.get('patterns_found', [])
+        patterns_found_str = json.dumps(patterns_found_val, indent=2) if isinstance(patterns_found_val, (list, dict)) else str(patterns_found_val)
+
+        md_content = f"""# 🚀 DEVAA Developer Agent — LLM Input Context
+- **Generated At**: {timestamp} (IST)
+- **Workflow ID**: #{workflow_id}
+- **Story ID**: #{story_id} ({title})
+- **Iteration**: {loop_iteration}
+- **Total Prompt Characters**: {len(prompt)} chars (~{len(prompt)//4} tokens)
+
+---
+
+## 📋 Story Details
+- **Title**: {title}
+- **Description**:
+{description or '_No description provided._'}
+
+- **Acceptance Criteria**:
+{acceptance_criteria or '_No acceptance criteria provided._'}
+
+---
+
+## 🎯 Target Repositories
+{repo_names_list}
+
+---
+
+## 🗺️ Implementation Map (from RepoAnalysisAgent)
+- **Context Summary**:
+{impl_map.get('context_summary', 'No context available')}
+
+- **Files to Modify**:
+```json
+{files_to_modify_str}
+```
+
+- **Patterns to Follow**:
+```json
+{patterns_found_str}
+```
+
+- **Implementation Notes**:
+{impl_map.get('implementation_notes', 'None')}
+
+---
+
+## 🧠 Existing Repository Code Context (ChromaDB Hybrid RAG)
+{existing_code_section.strip() if existing_code_section.strip() else "_No existing code snippets retrieved from RAG._"}
+
+---
+
+## 📎 Reference Sources (Jira Attachments, Git Links, KB)
+{reference_section.strip() if reference_section.strip() else "_No external reference sources retrieved._"}
+
+---
+
+## 🔄 QA Rejection Feedback (Rework Cycle)
+{rework_section.strip() if rework_section.strip() else "_None (First-pass implementation)._"}
+
+---
+
+## 📜 Full Raw Prompt Sent to LLM
+```text
+{prompt}
+```
+"""
+        run_filename = f"developer_prompt_wf_{workflow_id}_story_{story_id}_iter_{loop_iteration}.md"
+        run_filepath = os.path.join(scratch_dir, run_filename)
+        with open(run_filepath, "w", encoding="utf-8") as f:
+            f.write(md_content)
+
+        latest_filepath = os.path.join(scratch_dir, "latest_developer_prompt.md")
+        with open(latest_filepath, "w", encoding="utf-8") as f:
+            f.write(md_content)
+
+        self.logger.info(f"[DeveloperAgent] Saved prompt markdown to {run_filepath} and {latest_filepath}")
+        return run_filepath
 
     def _execute(self, context: dict) -> AgentResult:
         story = context.get('story')
@@ -197,6 +305,34 @@ class DeveloperAgent(BaseAgent):
             reference_section=reference_section,
             rework_section=rework_section
         )
+
+        # ── 1. Save full prompt to DB (step_record.agent_prompt) ──
+        step_record = context.get('step_record') or getattr(self, 'current_step', None)
+        if step_record:
+            try:
+                step_record.agent_prompt = prompt
+                self.db.session.commit()
+                self.logger.info(f"[DeveloperAgent] Saved full LLM prompt to step #{step_record.id} in DB ({len(prompt)} chars)")
+            except Exception as e:
+                self.logger.warning(f"[DeveloperAgent] Failed to persist prompt to step_record in DB: {e}")
+
+        # ── 2. Save formatted context and raw prompt to backend/scratch/ Markdown ──
+        try:
+            self._save_prompt_to_scratch(
+                context=context,
+                prompt=prompt,
+                title=title,
+                description=description,
+                acceptance_criteria=acceptance_criteria,
+                repo_names_list=repo_names_list,
+                impl_map=impl_map,
+                existing_code_section=existing_code_section,
+                reference_section=reference_section,
+                rework_section=rework_section,
+                loop_iteration=loop_iteration
+            )
+        except Exception as scratch_err:
+            self.logger.warning(f"[DeveloperAgent] Failed to save prompt to scratch directory: {scratch_err}")
 
         try:
             llm_response = LLMService.generate_response(
@@ -325,6 +461,7 @@ class DeveloperAgent(BaseAgent):
 
             return AgentResult(
                 success=True,
+                prompt=prompt,
                 output={
                     "summary": summary,
                     "pr_descriptions": pr_descriptions,
@@ -340,5 +477,6 @@ class DeveloperAgent(BaseAgent):
             self.logger.error(f"DeveloperAgent code generation failed: {e}")
             return AgentResult(
                 success=False,
+                prompt=prompt if 'prompt' in locals() else None,
                 error=f"DeveloperAgent failed to generate code for '{title}': {e}"
             )
