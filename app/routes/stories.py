@@ -49,7 +49,29 @@ def list_stories():
     else:
         stories = Story.query.order_by(Story.created_at.desc()).all()
 
-    return api_response(200, True, "Success", [s.to_dict() for s in stories])
+    story_ids = [s.id for s in stories]
+    ran_story_ids = set()
+    rework_story_ids = set()
+    if story_ids:
+        from app.models.devaa_models import QAReview, PipelineLog
+        from app.models.workflow import Workflow
+        wf_story_ids = set(r[0] for r in db.session.query(Workflow.story_id).filter(Workflow.story_id.in_(story_ids)).distinct().all())
+        log_story_ids = set(r[0] for r in db.session.query(PipelineLog.story_id).filter(PipelineLog.story_id.in_(story_ids)).distinct().all())
+        ran_story_ids = wf_story_ids.union(log_story_ids)
+        rework_story_ids = set(
+            r[0] for r in db.session.query(QAReview.story_id).filter(
+                QAReview.story_id.in_(story_ids),
+                QAReview.decision == 'rejected',
+                QAReview.is_rework == True
+            ).distinct().all()
+        )
+
+    return api_response(200, True, "Success", [
+        s.to_dict(
+            has_rework=(s.id in rework_story_ids),
+            has_run=(s.id in ran_story_ids)
+        ) for s in stories
+    ])
 
 
 @stories_bp.route('/<int:story_id>', methods=['GET'])
