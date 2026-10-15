@@ -20,6 +20,7 @@ class AgentResult:
     cost_usd: float = 0.0
     guardrail_triggered: bool = False
     guardrail_reason: str = None
+    prompt: str = None
 
 
 class BaseAgent(ABC):
@@ -31,6 +32,7 @@ class BaseAgent(ABC):
         self.db = db
         self.config = config
         self.logger = logging.getLogger(self.__class__.__name__)
+        self.current_step = None
 
     @abstractmethod
     def _execute(self, context: dict) -> AgentResult:
@@ -48,9 +50,12 @@ class BaseAgent(ABC):
 
         self.logger.info(f"[{self.agent_name}] Starting. Context keys: {list(context.keys())}")
         
-        # Inject workflow_id into context if not present, useful for metrics
+        # Inject workflow_id and step_record into context
         if workflow_id is not None and 'workflow_id' not in context:
             context['workflow_id'] = workflow_id
+        if step_record is not None:
+            context['step_record'] = step_record
+            self.current_step = step_record
 
         # ── Input Guardrails ──────────────────────────────────────
         rail_result = InputRails.validate(context, workflow_id=workflow_id, config=self.config)
@@ -116,6 +121,8 @@ class BaseAgent(ABC):
             return str(obj)
 
         try:
+            if hasattr(result, 'prompt') and result.prompt:
+                step_record.agent_prompt = result.prompt
             step_record.agent_response = (
                 json.dumps(result.output, default=_safe_serializer)
                 if result.output else result.error
