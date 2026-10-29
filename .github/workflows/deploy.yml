@@ -9,7 +9,7 @@ env:
   REGISTRY: ghcr.io
   IMAGE_NAME: aiinhome-aivista/new_agent_15_be
   CONTAINER_NAME: new-agent-15-be
-  PORT: 3030
+  PORT: 3050
 
 jobs:
 
